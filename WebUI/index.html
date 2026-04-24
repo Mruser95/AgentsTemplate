@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent WebUI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 认证视图 -->
+  <div id="auth-view">
+    <div class="auth-card">
+      <h2>Agent WebUI</h2>
+      <input id="api-key-input" type="password" placeholder="请输入 API Key" autocomplete="off" />
+      <button id="auth-submit-btn">连接</button>
+      <div id="auth-error"></div>
+    </div>
+  </div>
+
+  <!-- 聊天视图：单线程模式（一个用户一个 thread_id） -->
+  <div id="chat-view" style="display:none">
+    <header id="topbar">
+      <div class="topbar-title">Agent WebUI</div>
+      <div class="topbar-actions">
+        <button id="files-btn" class="topbar-btn" title="查看与下载本次会话文件">文件</button>
+        <button id="new-thread-btn" class="topbar-btn" title="开始一个全新的对话（清除当前上下文）">新建对话</button>
+        <button id="logout-btn" class="topbar-btn" title="退出登录">退出</button>
+      </div>
+    </header>
+    <main id="chat-main">
+      <div id="messages"></div>
+      <div id="input-bar">
+        <textarea id="message-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" rows="1"></textarea>
+        <button id="send-btn" disabled>发送</button>
+        <button id="stop-btn" style="display:none">停止</button>
+      </div>
+    </main>
+  </div>
+
+  <!-- 文件面板（固定覆层，不依赖 chat-view 内部结构） -->
+  <div id="file-panel">
+    <div id="file-panel-header">
+      <span id="file-panel-title">文件</span>
+      <div class="file-panel-header-actions">
+        <button id="file-panel-refresh" class="file-panel-icon-btn" title="刷新">↻</button>
+        <button id="file-panel-close" class="file-panel-icon-btn" title="关闭">×</button>
+      </div>
+    </div>
+    <div id="file-panel-body"></div>
+  </div>
+
+  <!-- 按顺序引入 JS 模块 -->
+  <!-- loader.js: 异步加载 marked + KaTeX（多 CDN 降级） -->
+  <script src="loader.js"></script>
+  <script src="api.js"></script>
+  <script src="thread.js"></script>
+  <script src="auth.js"></script>
+  <script src="render.js"></script>
+  <script src="sse.js"></script>
+  <script src="app.js"></script>
+  <script src="files.js"></script>
+</body>
+</html>

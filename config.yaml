@@ -1,0 +1,99 @@
+# config.yaml
+
+# >> Shell Tool Configuration
+shell_restriction: false
+shell_permissions:
+  dir_options: [ls, cd, pwd, find, stat, file, du, df]
+  txt_options: [cat, head, tail, less, more, echo, grep, awk, cut, tr, sort, uniq, wc, diff]
+  env_options: [env, printenv, which, whereis, type, uname, hostname, date, whoami, id, uptime, ps]
+  other_options: []
+  
+shell_count_limit: 50
+shell_checker_prompt: |
+  You are a security system that checks shell commands for safety. 
+  Only allow commands that are necessary for the agent to accomplish its task, and do not allow any commands that could be harmful or unnecessary.
+  If a command is potentially harmful or unnecessary, reject it and provide a clear explanation of why it was rejected.
+  Please follow these interception rules:
+    - ...
+    
+
+# >> Browser Tool Configuration 
+browser_count_limit: 15
+browser_headless: true
+browser_timeout: 30000          # milliseconds
+browser_allowed_domains: []     # empty = allow all; e.g. ["github.com", "google.com"]
+
+
+# >> Tavily Search Tool Configuration
+tavily_count_limit: 10
+tavily_max_results: 3
+tavily_search_depth: advanced    # "basic" or "advanced"
+tavily_include_answer: true      # let Tavily synthesize a short answer
+tavily_include_domains: []       # empty = no allow-list filter
+tavily_exclude_domains: []       # empty = no exclude filter
+
+
+# >> Tasker Coder Agent Configuration
+tasker_run_call_limit: 30
+tasker_thread_call_limit: 100
+tasker_exit_behavior: end
+dispatch_count_limit: 10
+
+
+# >> Coder Agent Configuration
+coder_run_call_limit: 50         # max LLM calls per single coder.invoke run
+coder_thread_call_limit: 1000     # max LLM calls across the whole thread (multi-turn)
+coder_exit_behavior: end         # "end" -> graceful stop; "error" -> raise
+coder_lint_max_retries: 3        # max "lint fail -> feedback -> re-invoke" rounds (0 disables retry, status forced BLOCKED on first fail)
+
+
+# >> Tester Agent Configuration
+tester_run_call_limit: 30        # max LLM calls per single tester.invoke run
+tester_thread_call_limit: 100    # max LLM calls across the whole thread (multi-turn)
+tester_exit_behavior: end        # "end" -> graceful stop; "error" -> raise
+
+
+# >> Checker Agent Configuration
+checker_run_call_limit: 20       # max LLM calls per single checker.invoke run
+checker_thread_call_limit: 60    # max LLM calls across the whole thread (multi-turn)
+checker_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
+
+
+# >> Manager Agent Configuration
+manager_run_call_limit: 80       # max LLM calls per single manager.invoke run (executing 阶段会循环派发，预算要够)
+manager_thread_call_limit: 500   # max LLM calls across the whole thread (跨多轮对话累计上限)
+manager_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
+
+
+# >> Collator Scheduler Configuration
+collator_unsettled_threshold: 30   # 累计未整理消息数 >= 阈值就起一个后台任务跑整理
+collator_max_parallel: 2           # 同时在跑的 collator 任务上限（跨 thread 共享信号量）
+collator_retry_count: 1            # 单个 route 失败时的重试次数（总尝试数 = retry_count + 1）
+collator_long_memory_k: 5          # 长期记忆整理时每条候选召回的最近邻数
+
+
+# >> MCP Configuration
+mcp_server:
+  host: 127.0.0.1
+  port: 8000
+  timeout: 30000    # milliseconds
+  sse_read_timeout: 30000
+extensions:
+  - name: terminal
+    url: http://localhost:8000/mcp
+  - name: browser
+    url: http://localhost:8001/mcp
+
+
+# >> Knowledge Retriever Configuration
+dim: 1024
+dsn: postgresql://postgres:postgres@localhost:5432/rag
+embed_model: BAAI/bge-m3
+rerank_model: BAAI/bge-reranker-v2-m3
+retrieve_top_k: 5                # default Top-K returned by knowledge_search
+retrieve_call_limit: 20          # max knowledge_search calls per session
+
+vec_k: 30
+bm25_k: 30
+rrf_c: 60
+

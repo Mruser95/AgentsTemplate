@@ -1,0 +1,17 @@
+langchain >= 1.2.15
+langgraph >= 1.1.6
+langgraph-checkpoint-sqlite >= 3.0.3
+aiosqlite >= 0.22.1
+PyYAML >= 6.0.3
+langchain-community >= 0.4.1
+langchain-openai >= 1.1.14
+playwright >= 1.58.0
+mcp >= 1.27.0
+langchain-mcp-adapters >= 0.2.2
+rank-bm25 >= 0.2.2
+sentence-transformers >= 5.4.1
+jieba >= 0.42.1
+psycopg >= 3.3.3
+pgvector >= 0.4.2
+fastapi >= 0.136.0
+uvicorn[standard] >= 0.46.0
