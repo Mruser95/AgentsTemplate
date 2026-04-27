@@ -8,6 +8,7 @@ from langchain.agents import create_agent
 from dotenv import load_dotenv
 import os
 import sys
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -21,10 +22,16 @@ from agents_prompt import retriever_prompt  # noqa: E402
 
 load_dotenv()
 
+with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
+    _config = yaml.safe_load(f) or {}
+
+retriever_recursion_limit: int = int(_config.get("retriever_recursion_limit", 80))
+
 llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
+    stream_chunk_timeout=180,
 )
 
 
@@ -98,7 +105,10 @@ async def retrieve(query: str) -> dict:
           items[{source, content, relevance, item_id, similarity, ...}] /
           confidence / gaps。
     """
-    state = await retriever_agent.ainvoke({"messages": [HumanMessage(content=query)]})
+    state = await retriever_agent.ainvoke(
+        {"messages": [HumanMessage(content=query)]},
+        config={"recursion_limit": retriever_recursion_limit},
+    )
     report = state.get("structured_response")
     if not isinstance(report, RetrievalReport):
         return {

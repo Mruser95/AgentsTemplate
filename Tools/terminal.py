@@ -19,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 load_dotenv(PROJECT_ROOT / '.env')
 
 from Tools._context import bump_budget, current_thread_id  # noqa: E402
+from Tools._workspace import ensure_workspace  # noqa: E402
 
 with open(PROJECT_ROOT / 'config.yaml', 'r', encoding='utf-8') as file:
     config = yaml.safe_load(file)
@@ -69,6 +70,7 @@ llm = ChatOpenAI(
     model=os.getenv("small_llm_model"),
     api_key=os.getenv("small_llm_key"),
     base_url=os.getenv("small_llm_base_url"),
+    streaming=False,
 )
 
 
@@ -82,13 +84,14 @@ def _decode(data: bytes) -> str:
         return data.decode(locale.getpreferredencoding(False), errors="replace")
 
 
-def _run_subprocess(command: str, timeout: int = 30) -> str:
+def _run_subprocess(command: str, timeout: int = 30, cwd: str | None = None) -> str:
     try:
         proc = subprocess.run(
             command,
             shell=True,
             capture_output=True,
             timeout=timeout,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired:
         return f"Command timed out after {timeout}s"
@@ -102,7 +105,7 @@ def _run_subprocess(command: str, timeout: int = 30) -> str:
     return stdout + (f"\n{stderr}" if stderr.strip() else "")
 
 
-def _execute(command: str, timeout: int = 30) -> str:
+def _execute(command: str, timeout: int = 30, cwd: str | None = None) -> str:
     allowed, denied = check_command(command)
     if not allowed:
         return f"Command denied, contains unauthorized commands: {', '.join(denied)}"
@@ -111,10 +114,10 @@ def _execute(command: str, timeout: int = 30) -> str:
     )
     if not response.allowed:
         return f"Command denied by checker agent: {response.reason}"
-    return _run_subprocess(command, timeout)
+    return _run_subprocess(command, timeout, cwd=cwd)
 
 
-async def _execute_async(command: str, timeout: int = 30) -> str:
+async def _execute_async(command: str, timeout: int = 30, cwd: str | None = None) -> str:
     allowed, denied = check_command(command)
     if not allowed:
         return f"Command denied, contains unauthorized commands: {', '.join(denied)}"
@@ -124,7 +127,7 @@ async def _execute_async(command: str, timeout: int = 30) -> str:
     if not response.allowed:
         return f"Command denied by checker agent: {response.reason}"
     # subprocess 本身是阻塞 IO，放线程池；LLM 安全检查已经是 async，不再绕线程
-    return await asyncio.to_thread(_run_subprocess, command, timeout)
+    return await asyncio.to_thread(_run_subprocess, command, timeout, cwd)
 
 
 class SafeShell(BaseTool):
@@ -148,7 +151,7 @@ class SafeShell(BaseTool):
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
             return self._budget_response(tid)
-        result = _execute(command)
+        result = _execute(command, cwd=str(ensure_workspace(tid)))
         return f"{result}\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
 
     async def _arun(self, command: str) -> str:
@@ -156,5 +159,5 @@ class SafeShell(BaseTool):
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
             return self._budget_response(tid)
-        result = await _execute_async(command)
+        result = await _execute_async(command, cwd=str(ensure_workspace(tid)))
         return f"{result}\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"

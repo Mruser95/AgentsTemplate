@@ -1,36 +1,35 @@
 ---
 tool: working_todo
-description: 维护 SessionDB/<thread_id>/workingTodo.md，承载"当前正在执行的 plan subtask"的步骤清单（markdown checkbox）
+description: 维护 SessionDB/<thread_id>/workingTodo.md，承载 tasker_coder 当前 subtask 的"派单清单"（每条对应一次 dispatch_coder）；写权限归 tasker_coder，manager 只读
 ---
 
 # working_todo Tool — SKILL.md
 
 ## 概览
-`working_todo` 维护 `SessionDB/<thread_id>/workingTodo.md`，给当前正在执行的**单个** subtask 打底——把它进一步拆成 N 个可勾选的执行步骤，并在执行过程中实时勾掉。文件按会话 thread_id 隔离，各会话互不影响。
+`working_todo` 维护 `SessionDB/<thread_id>/workingTodo.md`，给 tasker_coder 当前正在执行的**单个** subtask 打底——把它进一步拆成 N 条**派单清单**（每条对应一次后续 `dispatch_coder` 调用），派完一条勾一条。文件按会话 thread_id 隔离，各会话互不影响。
 
 **只反映"现在"，不留历史**：每次切到新的 subtask 都要 `clear` + `write_steps` 重写；**workingTodo.md 不是日志**，是当前活动的镜像。
 
 ```
-plan.json (整个项目级)              workingTodo.md (当前 subtask 级)
+plan.json (manager 视角，整个项目级)   workingTodo.md (tasker_coder 视角，当前 subtask 级)
 ├─ milestone m1                     # Current Working Todo
 │   ├─ subtask m1-t1 (in_progress) ──→ > subtask_id: m1-t1
-│   ├─ subtask m1-t2 (pending)         > description: 实现 to_csv
-│   └─ subtask m1-t3 (pending)         - [x] 阅读 Tools/report.py 字段
-├─ milestone m2                        - [x] 创建 csv_exporter.py 骨架
-                                       - [ ] 实现 to_csv 主体
-                                       - [ ] 写 3 条边界测试
-                                       - [ ] 跑 pytest 验证
+│   ├─ subtask m1-t2 (pending)         > description: 实现 csv 导出能力
+│   └─ subtask m1-t3 (pending)         - [x] csv-exporter: 写 Tools/csv_exporter.py
+├─ milestone m2                        - [x] cli-wire: 把 --format=csv 接到 cli.py
+                                       - [ ] tests-csv: 写 3 条边界测试
+                                       - [ ] verify: 跑 pytest 验证
 ```
 
 ---
 
 ## ⛔ 硬约束
 
-1. **只有 manager 能用** —— 子代理（coder/tester/retriever/checker）不需要也不应使用。
-2. **每个 subtask 一份清单** —— 切换 subtask 之前必须 `clear`，然后 `write_steps` 写入新的；**禁止**把多个 subtask 的步骤混塞在同一份清单里。
-3. **`write_steps` 是覆盖式** —— 整文件替换，不是追加。所以 steps 必须一次列全。
-4. **每完成一步立即 `mark_done`** —— 不要积攒多步再统一勾。理由：勾选是给"未来的自己 / 用户"看进度的，滞后勾相当于撒谎。
-5. **subtask 通过 plan_io.update_subtask_status='done' 标完成后，下一个 subtask 开工前调 `clear`**——避免上一个 subtask 的步骤残留误导。
+1. **写权限归 tasker_coder，manager 只能 view** —— `manager` 实例化此工具时传 `read_only=True`，其它 action 会被拒绝；coder / tester / retriever / checker 等更下层子代理不接触此工具。
+2. **每个 subtask 一份清单** —— tasker_coder 接到一个 subtask 就 `write_steps` 写入派单清单；下一次进入新 subtask 前 `clear`。**禁止**把多个 subtask 的步骤混塞在同一份清单里。
+3. **`write_steps` 是覆盖式** —— 整文件替换，不是追加。所以 steps 必须一次列全（=你这一轮预计调几次 `dispatch_coder`）。
+4. **每完成一次 dispatch_coder 立即 `mark_done`** —— 不要积攒多步再统一勾。勾选是给 manager / 用户看进度的，滞后勾相当于撒谎。
+5. **产出 TaskerReport 之前调 `clear`** —— 避免本轮派单清单残留污染下一个 subtask。
 
 ---
 
@@ -46,59 +45,64 @@ plan.json (整个项目级)              workingTodo.md (当前 subtask 级)
 ### 步骤的写法（影响可读性，请遵守）
 
 - 每条 ≤ 80 字
-- **动词开头**（"阅读..." / "创建..." / "实现..." / "运行..."）
-- **可独立勾选**（不要写"实现 + 测试"这种半步骤组合）
-- 通常 3–7 步；少于 3 步说明 subtask 拆得太粗，多于 7 步说明 subtask 拆得太细
+- **格式：`<task_name>: <一句话目标>`** —— `task_name` 与你后续 `dispatch_coder` 时填的 `task_name` 严格对齐，方便对账
+- **可独立勾选**（一条 = 一次 `dispatch_coder` 调用）
+- 通常 1–6 条；单文件耦合任务可能只有 1 条，这是合法的；超过 6 条说明 subtask 拆得过细，回去合一些
 
 ---
 
 ## 典型工作流
 
-### 1) 切到新 subtask 时
-```
-action=clear
-```
-然后：
+### 1) 接到一个 subtask 时（**第一次 `dispatch_coder` 之前**）
 ```
 action=write_steps
 subtask_id=m1-t1
-description=实现 Tools/csv_exporter.py 的 to_csv 函数
+description=实现 csv 导出能力（Tools/csv_exporter.py + cli 接线 + 测试）
 steps=[
-  "阅读 Tools/report.py 的 Report 字段签名",
-  "创建 Tools/csv_exporter.py 骨架（导入 + 函数签名）",
-  "实现 to_csv 主体逻辑（含 UTF-8 BOM）",
-  "写 3 条边界测试到 tests/test_csv_exporter.py",
-  "运行 pytest 验证全部通过"
+  "csv-exporter: 写 Tools/csv_exporter.py，提供 to_csv(report) 接口（UTF-8 BOM）",
+  "cli-wire: 在 cli.py 增加 --format=csv 分派到 csv_exporter.to_csv",
+  "tests-csv: 写 3 条边界测试到 tests/test_csv_exporter.py",
+  "verify: 跑 pytest tests/test_csv_exporter.py 全 pass"
 ]
 ```
 
-### 2) 执行过程中每完成一步
+### 2) 每次 `dispatch_coder` 返回 `status=DONE` 且证据可信
 ```
 action=mark_done
 step_index=1
 ```
-（紧接着派发 subagent 做第 2 步……）
+（紧接着派下一条 step 对应的 `dispatch_coder`……）
 
 ### 3) 阶段性查看进度
 ```
 action=view
 ```
 
-### 4) subtask 完成（plan_io.update_subtask_status='done' 之后）
+### 4) 全部步骤完成、即将产出 TaskerReport 之前
 ```
 action=clear
 ```
-（然后写下一个 subtask 的 steps）
+
+---
+
+## manager 视角（**只读**）
+
+manager 在派出 `dispatch_tasker_coder` 之后想看进度，可以调：
+```
+action=view
+```
+返回的就是 tasker_coder 当前的派单清单 + 已勾选状态。试图 `write_steps` / `mark_done` / `clear` 会被工具拒绝并返回提示。
 
 ---
 
 ## 探索经验
 ```
-1. 应该避免做"一次写入 20 条小步骤当备忘录用"，否则会让 todo 退化成 to-implement
-   清单、勾选失去意义；应该把过细的拆分留在 plan.json 的 subtask 层，
-   workingTodo.md 只承载"当下这个 subtask 的 3-7 步执行流"。
-2. 应该避免做"完成一批步骤后再统一 mark_done"，否则进度永远落后真实状态、
-   被中断后无法知道自己做到哪了；应该每完成一步立即 mark_done。
-3. 应该避免做"切换 subtask 时只 write_steps 不 clear"，工具是覆盖式的所以
-   行为上不会出错，但显式 clear 让"当前清单已过时"的语义更清楚。
+1. 应该避免做"清单条数 ≠ dispatch_coder 调用次数"，否则 mark_done 索引会错位、
+   manager 看到的进度也对不上；应该让每条 step 严格对应一次 dispatch_coder。
+2. 应该避免做"派完一批 coder 再统一 mark_done"，否则 manager 看到的进度永远
+   落后真实状态、被中断后无法续场；应该每次 dispatch_coder 返回就立即 mark_done。
+3. 应该避免做"为了凑步数把单文件硬拆给多个 coder"，会因为同文件互相覆盖而冲突；
+   单文件耦合任务清单 1 条即可，这是合法的、最常见的情况。
+4. 应该避免做"用 mark_done 表示子任务半成"，勾掉 = DONE 且核对过 verification；
+   DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED 不要勾。
 ```

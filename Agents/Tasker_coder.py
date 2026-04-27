@@ -26,6 +26,9 @@ from Agents.coder import (  # noqa: E402
     invoke_with_lint_gate,
 )
 from Tools._context import bump_budget, current_thread_id  # noqa: E402
+from Tools._workspace import workspace_info  # noqa: E402
+from Tools.skills import SkillLibrary  # noqa: E402
+from Tools.working_todo import WorkingTodo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -136,6 +139,8 @@ def _format_task_specific_prompt(task_name: str, task_prompt: str, context: str)
     if context:
         blocks.append("### 上下文\n" + context)
     blocks.append("### 任务要求\n" + task_prompt.strip())
+    tid = current_thread_id()
+    blocks.append(workspace_info(tid))
     return "\n\n".join(blocks)
 
 
@@ -262,9 +267,11 @@ llm = ChatOpenAI(
     base_url=os.getenv("agent_llm_base_url"),
 )
 
+_dispatch_coder_tool = DispatchCoder()
+
 tasker_coder_agent = create_agent(
     model=llm,
-    tools=[DispatchCoder()],
+    tools=[SkillLibrary(), _dispatch_coder_tool, WorkingTodo()],
     system_prompt=tasker_coder_prompt,
     response_format=TaskerReport,
     middleware=[

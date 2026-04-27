@@ -21,6 +21,7 @@ from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.plan_io import PlanIO  # noqa: E402
 from Tools.working_todo import WorkingTodo  # noqa: E402
+from Tools._workspace import workspace_info  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
 from Agents.tester import dispatch_tester  # noqa: E402
@@ -35,6 +36,7 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
 manager_run_call_limit: int = _config.get("manager_run_call_limit", 80)
 manager_thread_call_limit: int = _config.get("manager_thread_call_limit", 500)
 manager_exit_behavior: str = _config.get("manager_exit_behavior", "end")
+manager_recursion_limit: int = int(_config.get("manager_recursion_limit", 100))
 
 
 CHECKPOINT_DB = PROJECT_ROOT / "SessionDB" / "checkpoints.db"
@@ -44,6 +46,7 @@ llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
+    
 )
 
 
@@ -56,7 +59,7 @@ _MANAGER_TOOLS = [
     TavilySearch(),
     Schedule(),
     PlanIO(),
-    WorkingTodo(),
+    WorkingTodo(read_only=True),
     retrieve,
     dispatch_tasker_coder,
     dispatch_tester,
@@ -72,11 +75,14 @@ _MANAGER_MIDDLEWARE = [
     ),
 ]
 
-def _build_manager_agent(checkpointer: Any = None):
+def _build_manager_agent(checkpointer: Any = None, thread_id: str | None = None):
+    sp = manager_prompt
+    if thread_id:
+        sp = sp + "\n\n---\n\n" + workspace_info(thread_id)
     return create_agent(
         model=llm,
         tools=_MANAGER_TOOLS,
-        system_prompt=manager_prompt,
+        system_prompt=sp,
         middleware=_MANAGER_MIDDLEWARE,
         checkpointer=checkpointer,
     )
@@ -86,12 +92,12 @@ def _build_manager_agent(checkpointer: Any = None):
 
 
 @asynccontextmanager
-async def open_manager_agent() -> AsyncIterator[Any]:
+async def open_manager_agent(thread_id: str | None = None) -> AsyncIterator[Any]:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
     CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
     async with AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB)) as saver:
-        yield _build_manager_agent(checkpointer=saver)
+        yield _build_manager_agent(checkpointer=saver, thread_id=thread_id)
 
 
 @dataclass
@@ -106,8 +112,11 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
     if not thread_id or not isinstance(thread_id, str):
         raise ValueError("manager_session 需要非空字符串 thread_id（多用户隔离依赖它）")
 
-    async with open_manager_agent() as agent:
-        config: dict = {"configurable": {"thread_id": thread_id}}
+    async with open_manager_agent(thread_id=thread_id) as agent:
+        config: dict = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": manager_recursion_limit,
+        }
 
         async def _ainvoke(message: str, *, extra_config: Optional[dict] = None) -> dict:
             merged_config = dict(config)

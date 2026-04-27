@@ -97,19 +97,26 @@ def _parse_meta(text: str) -> tuple[str, str]:
 class WorkingTodo(BaseTool):
     name: str = "working_todo"
     description: str = (
-        "管理 SessionDB/<thread_id>/workingTodo.md（当前 subtask 的步骤清单 / markdown checkbox）。"
-        "actions: view（查看当前清单） / write_steps（用一份新 subtask 的步骤清单覆盖文件） / "
+        "管理 SessionDB/<thread_id>/workingTodo.md（当前 subtask 的派单清单 / markdown checkbox）。"
+        "actions: view（查看当前清单） / write_steps（用一份新清单覆盖文件） / "
         "mark_done（把第 N 步 checkbox 改为 [x]） / clear（清空文件）。"
-        "**只有 manager 能用此工具**。每开始一个新 subtask，必须先 write_steps 拆步骤；"
-        "执行过程中每完成一步立刻 mark_done；本 subtask 通过 plan_io.update_subtask_status "
-        "标记为 done 之后，下一个 subtask 开工前调 clear 清空再 write_steps。"
+        "**写权限归 tasker_coder**：每接到一个 subtask，先 write_steps 把派单清单落盘，"
+        "每派完一个 dispatch_coder 就立刻 mark_done(对应索引)；任务结束前调 clear。"
+        "**manager 只能 view**——用来观察 tasker_coder 当前的派发进度。"
     )
     args_schema: Type[BaseModel] = WorkingTodoInput
+    read_only: bool = False
 
     def _run(
         self, action: str, subtask_id: Optional[str] = None, description: Optional[str] = None,
         steps: Optional[list[str]] = None, step_index: Optional[int] = None,
     ) -> str:
+        if self.read_only and action != "view":
+            return (
+                f"working_todo 当前为只读模式，action='{action}' 被拒绝；只支持 view。"
+                "派单清单的写入由 tasker_coder 负责，不要绕过。"
+            )
+
         path = _todo_path(current_thread_id())
 
         if action == "view":

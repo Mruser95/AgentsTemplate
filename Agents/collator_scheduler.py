@@ -164,9 +164,7 @@ class CollationScheduler:
             except Exception:
                 self._log(thread_id, route="collate", ok=False, error=traceback.format_exc())
 
-    async def _run_route(self, thread_id: str, name: str,
-        factory: Callable[[], Awaitable[Any]],
-    ) -> None:
+    async def _run_route(self, thread_id: str, name: str, factory: Callable[[], Awaitable[Any]]) -> None:
         for attempt in range(1, self._retry_count + 2):
             try:
                 await factory()

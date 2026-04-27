@@ -1,4 +1,4 @@
-from langchain_core.messages import BaseMessage, get_buffer_string
+from langchain_core.messages import get_buffer_string
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -137,9 +137,9 @@ are worth keeping beyond the current session.
 
 Return a single JSON object of the form:
 
-{
+{{
   "long_memories": [LongMemoryEntry, ...]
-}
+}}
 
 No prose, no markdown fences, no extra top-level keys.
 
@@ -220,22 +220,46 @@ long_memory_chain = (
     | llm.with_structured_output(LongMemoryBatch)
 )
 
-@tool
-async def short_memory(messages: list[BaseMessage]) -> ShortMemoryEntry:
-    """
-    收集并压缩当前会话内容为可读摘要，便于后续 agent 快速检索和理解上下文。
-    输入为 langgraph 消息流（list[BaseMessage]），工具内部负责序列化为 transcript 文本。
-    输出为结构化 JSON，包含关键信息摘要、相关任务和实体、轮次范围等字段。
-    仅用于简明短期记忆的写入归档，不负责长期知识沉淀或事实问答。
-    """
-    return await short_memory_chain.ainvoke({"transcript": get_buffer_string(messages)})
+async def _load_current_transcript() -> str:
+    from Tools._context import current_thread_id
+    from Agents.collator_scheduler import _read_checkpoint_messages
+    messages = await _read_checkpoint_messages(current_thread_id())
+    return get_buffer_string(messages)
+
 
 @tool
-async def long_memory(messages: list[BaseMessage]) -> LongMemoryBatch:
+async def short_memory() -> str:
+    """
+    收集并压缩当前会话内容为可读摘要，便于后续 agent 快速检索和理解上下文。
+    无需传参，工具内部会按当前 thread_id 自动从 checkpoint 读取完整消息流并序列化为 transcript。
+    生成结构化短期记忆并写入数据库；工具仅返回写入状态，不返回原始记忆内容。
+    仅用于简明短期记忆的写入归档，不负责长期知识沉淀或事实问答。
+    """
+    from Memory import shortMem
+    from Tools._context import current_thread_id
+
+    transcript = await _load_current_transcript()
+    entry: ShortMemoryEntry = await short_memory_chain.ainvoke({"transcript": transcript})
+    row_id = await shortMem.store(entry.model_dump(), thread_id=current_thread_id())
+    return f"短期记忆已写入成功，id={row_id}。"
+
+@tool
+async def long_memory() -> str:
     """
     从完整对话消息流中提取有价值的长期记忆，用于构建用户画像和通用知识库。
-    输入为 langgraph 消息流（list[BaseMessage]），工具内部负责序列化为 transcript 文本。
-    输出为结构化 JSON，包含记忆内容、类型、重要性、上下文等字段。
+    无需传参，工具内部会按当前 thread_id 自动从 checkpoint 读取完整消息流并序列化为 transcript。
+    生成结构化长期记忆并写入数据库；工具仅返回写入状态，不返回原始记忆内容。
     仅用于沉淀有价值的信息，不负责短期记忆的压缩和检索。
     """
-    return await long_memory_chain.ainvoke({"transcript": get_buffer_string(messages)})
+    from Memory import longMem
+    from Tools._context import current_thread_id
+
+    transcript = await _load_current_transcript()
+    batch: LongMemoryBatch = await long_memory_chain.ainvoke({"transcript": transcript})
+    row_ids: list[int] = []
+    if batch.long_memories:
+        row_ids = await longMem.store(
+            [m.model_dump() for m in batch.long_memories],
+            thread_id=current_thread_id(),
+        )
+    return f"长期记忆已写入成功，count={len(row_ids)}，ids={row_ids}。"

@@ -63,10 +63,11 @@ checker_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
 manager_run_call_limit: 80       # max LLM calls per single manager.invoke run (executing 阶段会循环派发，预算要够)
 manager_thread_call_limit: 500   # max LLM calls across the whole thread (跨多轮对话累计上限)
 manager_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
+manager_recursion_limit: 100     # max LangGraph steps per single manager run; includes model/tool loop steps
 
 
 # >> Collator Scheduler Configuration
-collator_unsettled_threshold: 30   # 累计未整理消息数 >= 阈值就起一个后台任务跑整理
+collator_unsettled_threshold: 15   # 累计未整理消息数 >= 阈值就起一个后台任务跑整理
 collator_max_parallel: 2           # 同时在跑的 collator 任务上限（跨 thread 共享信号量）
 collator_retry_count: 1            # 单个 route 失败时的重试次数（总尝试数 = retry_count + 1）
 collator_long_memory_k: 5          # 长期记忆整理时每条候选召回的最近邻数
@@ -92,6 +93,7 @@ embed_model: BAAI/bge-m3
 rerank_model: BAAI/bge-reranker-v2-m3
 retrieve_top_k: 5                # default Top-K returned by knowledge_search
 retrieve_call_limit: 20          # max knowledge_search calls per session
+retriever_recursion_limit: 80    # max LangGraph steps per single retrieve run; includes model/tool loop steps
 
 vec_k: 30
 bm25_k: 30

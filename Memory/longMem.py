@@ -74,10 +74,8 @@ async def store(
 
 
 async def store(
-    entry: Union[dict, list[dict]],
-    *,
-    thread_id: str = "",
-    conn: Optional[sqlite3.Connection] = None,
+    entry: Union[dict, list[dict]], *,
+    thread_id: str = "", conn: Optional[sqlite3.Connection] = None,
 ) -> Union[int, list[int]]:
     single = isinstance(entry, dict)
     entries: list[dict] = [entry] if single else list(entry)
@@ -125,11 +123,8 @@ def _load_rows(conn: sqlite3.Connection, thread_id: Optional[str]) -> list[dict]
 
 
 async def search_neighbors(
-    contents: Union[str, list[str]],
-    *,
-    k: int = 5,
-    thread_id: Optional[str] = None,
-    conn: Optional[sqlite3.Connection] = None,
+    contents: Union[str, list[str]], *, k: int = 5,
+    thread_id: Optional[str] = None, conn: Optional[sqlite3.Connection] = None,
 ) -> list[dict]:
     """召回最近邻；thread_id=None 时跨 thread，否则只在该 thread 里查。"""
     queries = [contents] if isinstance(contents, str) else list(contents)

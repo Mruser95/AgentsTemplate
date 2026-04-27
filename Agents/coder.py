@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 import asyncio
 import os
-import subprocess
 import sys
 import yaml
 
@@ -19,6 +18,8 @@ from Tools.terminal import SafeShell
 from Tools.tavily import TavilySearch
 from Tools.skills import SkillLibrary
 from Tools.linter import LintOutcome, alint_paths, lint_paths
+from Tools._context import current_thread_id
+from Tools._workspace import workspace_dir
 from agents_prompt import coder_prompt
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -35,6 +36,7 @@ llm = ChatOpenAI(
     model=os.getenv("code_llm_model"),
     api_key=os.getenv("code_llm_key"),
     base_url=os.getenv("code_llm_base_url"),
+    stream_chunk_timeout=600,
 )
 
 
@@ -177,30 +179,22 @@ coder_agent = build_coder_agent()
 
 
 def _changed_source_files(report: CoderReport) -> list[str]:
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(PROJECT_ROOT), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=20,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        r = None
-    if r is not None and r.returncode == 0:
-        paths: list[str] = []
-        for line in r.stdout.splitlines():
-            if len(line) < 4:
-                continue
-            status, rest = line[:2], line[3:]
-            if "D" in status:
-                continue
-            if " -> " in rest:
-                rest = rest.split(" -> ", 1)[1]
-            paths.append(str(PROJECT_ROOT / rest.strip().strip('"')))
-        return paths
-    return [
-        str(PROJECT_ROOT / fc.path)
-        for fc in report.file_changes
-        if fc.action in ("create", "modify")
-    ]
+    tid = current_thread_id()
+    ws = workspace_dir(tid)
+    paths: list[str] = []
+    for fc in report.file_changes:
+        if fc.action not in ("create", "modify"):
+            continue
+        rel = fc.path.strip()
+        if not rel:
+            continue
+        candidate = (ws / rel).resolve()
+        try:
+            candidate.relative_to(ws.resolve())
+        except ValueError:
+            continue
+        paths.append(str(candidate))
+    return paths
 
 
 def _fill_lint_result(report: CoderReport, outcome: LintOutcome) -> None:
@@ -283,7 +277,7 @@ async def ainvoke_with_lint_gate(
         if not isinstance(report, CoderReport):
             raise RuntimeError("coder agent 未返回 CoderReport 结构化响应")
 
-        # _changed_source_files 内部跑 git status（同步 subprocess）→ 放线程池
+        # _changed_source_files 现在只是路径计算，但保持 to_thread 习惯避免阻塞 loop
         paths = await asyncio.to_thread(_changed_source_files, report)
         outcome = await alint_paths(paths)
         if outcome.passed:
