@@ -19,6 +19,7 @@ from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
+from Tools.browser import Browser  # noqa: E402
 from Tools.plan_io import PlanIO  # noqa: E402
 from Tools.working_todo import WorkingTodo  # noqa: E402
 from Tools._workspace import workspace_info  # noqa: E402
@@ -57,6 +58,7 @@ _MANAGER_TOOLS = [
     SkillLibrary(),
     SafeShell(),
     TavilySearch(),
+    Browser(),
     Schedule(),
     PlanIO(),
     WorkingTodo(read_only=True),

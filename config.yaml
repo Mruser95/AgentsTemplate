@@ -9,6 +9,8 @@ shell_permissions:
   other_options: []
   
 shell_count_limit: 50
+shell_default_timeout: 120        # 默认 subprocess 超时（秒）；旧值 30s 会让联网/编译类命令被错杀
+shell_max_timeout: 600            # agent 通过 timeout 入参可申请的上限（秒）
 shell_checker_prompt: |
   You are a security system that checks shell commands for safety. 
   Only allow commands that are necessary for the agent to accomplish its task, and do not allow any commands that could be harmful or unnecessary.
@@ -34,8 +36,8 @@ tavily_exclude_domains: []       # empty = no exclude filter
 
 
 # >> Tasker Coder Agent Configuration
-tasker_run_call_limit: 30
-tasker_thread_call_limit: 100
+tasker_run_call_limit: 60
+tasker_thread_call_limit: 200
 tasker_exit_behavior: end
 dispatch_count_limit: 10
 

@@ -17,8 +17,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from Tools.terminal import SafeShell
 from Tools.tavily import TavilySearch
 from Tools.skills import SkillLibrary
+from Tools.write_file import WriteFile
 from Tools.linter import LintOutcome, alint_paths, lint_paths
-from Tools._context import current_thread_id
+from Tools._context import OnEvent, current_thread_id
 from Tools._workspace import workspace_dir
 from agents_prompt import coder_prompt
 
@@ -159,7 +160,7 @@ def build_coder_agent(task_specific_prompt: str = ""):
     )
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell(), TavilySearch()],
+        tools=[SkillLibrary(), SafeShell(), WriteFile(), TavilySearch()],
         system_prompt=system_prompt,
         response_format=CoderReport,
         middleware=[
@@ -225,9 +226,7 @@ def _retry_feedback(attempt: int, limit: int, outcome: LintOutcome) -> HumanMess
     ))
 
 
-def _finalize_blocked(
-    report: CoderReport | None, outcome: LintOutcome | None, limit: int,
-) -> CoderReport:
+def _finalize_blocked(report: CoderReport | None, outcome: LintOutcome | None, limit: int) -> CoderReport:
     assert report is not None and outcome is not None
     _fill_lint_result(report, outcome)
     report.status = "BLOCKED"
@@ -235,6 +234,25 @@ def _finalize_blocked(
         f"Lint 连续 {limit + 1} 轮未通过：{outcome.errors_digest(max_errors=3)}",
     ]
     return report
+
+
+def _missing_structured_response_report() -> CoderReport:
+    return CoderReport(
+        status="BLOCKED",
+        task_name="(unknown)",
+        summary="coder agent 未返回结构化 CoderReport。",
+        modules=[],
+        usage="",
+        usage_examples=[],
+        file_changes=[],
+        verification="",
+        key_decisions=[],
+        open_issues=[
+            "coder agent 未返回结构化 CoderReport：可能是 system prompt 过长被截断、"
+            "工具预算耗尽，或模型未走完结构化输出流程。**禁止**原样重派，请精简 "
+            "task_prompt 或拆得更小再继续。",
+        ],
+    )
 
 
 def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | None = None,) -> CoderReport:
@@ -247,7 +265,7 @@ def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | N
         state = agent.invoke({"messages": messages})
         report = state.get("structured_response")
         if not isinstance(report, CoderReport):
-            raise RuntimeError("coder agent 未返回 CoderReport 结构化响应")
+            return _missing_structured_response_report()
 
         outcome = lint_paths(_changed_source_files(report))
         if outcome.passed:
@@ -263,8 +281,27 @@ def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | N
     return _finalize_blocked(report, outcome, limit)
 
 
+async def astream_collect_final_state(agent: Any, messages: list, on_event: OnEvent | None = None) -> dict:
+    final_state: dict = {}
+    root_run_id: str | None = None
+    async for event in agent.astream_events({"messages": messages}, version="v2"):
+        if root_run_id is None and event.get("event") == "on_chain_start":
+            root_run_id = event.get("run_id")
+        if (
+            event.get("event") == "on_chain_end"
+            and event.get("run_id") == root_run_id
+        ):
+            output = (event.get("data") or {}).get("output")
+            if isinstance(output, dict):
+                final_state = output
+        if on_event is not None:
+            await on_event(event)
+    return final_state
+
+
 async def ainvoke_with_lint_gate(
-    agent: Any, user_content: str, *, max_retries: int | None = None,
+    agent: Any, user_content: str, *,
+    max_retries: int | None = None, on_event: OnEvent | None = None,
 ) -> CoderReport:
     limit = coder_lint_max_retries if max_retries is None else max_retries
     messages: list = [HumanMessage(content=user_content)]
@@ -272,10 +309,10 @@ async def ainvoke_with_lint_gate(
     outcome: LintOutcome | None = None
 
     for attempt in range(limit + 1):
-        state = await agent.ainvoke({"messages": messages})
+        state = await astream_collect_final_state(agent, messages, on_event=on_event)
         report = state.get("structured_response")
         if not isinstance(report, CoderReport):
-            raise RuntimeError("coder agent 未返回 CoderReport 结构化响应")
+            return _missing_structured_response_report()
 
         # _changed_source_files 现在只是路径计算，但保持 to_thread 习惯避免阻塞 loop
         paths = await asyncio.to_thread(_changed_source_files, report)

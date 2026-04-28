@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from contextvars import ContextVar
+from typing import Any, Awaitable, Callable, Optional
 from langchain_core.runnables.config import ensure_config
 
 DEFAULT_THREAD_ID = "_default"
+
+OnEvent = Callable[[dict], Awaitable[None]]
+on_event_var: ContextVar[Optional[OnEvent]] = ContextVar("on_event", default=None)
 
 
 def current_thread_id() -> str:

@@ -1,13 +1,10 @@
-from typing import Literal, Union
+from typing import Literal
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import BaseMessage, HumanMessage, get_buffer_string
-from langchain_core.tools import tool
 from pathlib import Path
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
-import json
 import os
 import sys
 import yaml
@@ -18,7 +15,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
-from Tools._context import current_thread_id  # noqa: E402
 from agents_prompt import checker_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -81,7 +77,8 @@ class CheckerReport(BaseModel):
         ge=0, le=100,
         description=(
             "0-100 的偏离分；必须与 overall_alignment 档位一致："
-            "0-15=on_track / 16-40=minor_drift / 41-70=major_drift / 71-100=off_track。"
+            "0-10=on_track / 11-30=minor_drift / 31-60=major_drift / 61-100=off_track。"
+            "判断在相邻档位之间犹豫时一律取更严格的那一档（默认从严）。"
         ),
     )
     current_phase: str = Field(
@@ -126,109 +123,26 @@ def build_checker_agent():
 checker_agent = build_checker_agent()
 
 
-# Convenience Tool =====================================================================
-
-
-def _load_plan(plan_path: str) -> Union[dict, str]:
-    p = Path(plan_path)
-    if not p.is_absolute():
-        p = PROJECT_ROOT / p
-    if not p.exists():
-        return f"plan file not found: {p}"
-    raw = p.read_text(encoding="utf-8").strip()
-    if not raw:
-        return f"plan file empty: {p}"
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        return f"plan file not valid JSON: {p} ({e})"
-    if not data:
-        return f"plan file placeholder (empty object/array): {p}"
-    return data
-
-
-def _fallback_report(*, current_phase: str, progress_summary: str, problems: list[str],
-    suggestions: list[Suggestion], drift_score: int = 85,
-) -> dict:
+def checker_failed_report() -> dict:
     return CheckerReport(
         overall_alignment="off_track",
-        drift_score=drift_score,
-        current_phase=current_phase,
-        progress_summary=progress_summary,
+        drift_score=80,
+        current_phase="checker 自身失败",
+        progress_summary="checker_agent 未返回合法的 CheckerReport 结构化响应。",
         deviations=[],
-        problems=problems,
-        suggestions=suggestions,
+        problems=[
+            "checker_agent 未能产出结构化 CheckerReport，"
+            "可能是调用预算被提前截断或模型输出漂移。"
+        ],
+        suggestions=[
+            Suggestion(
+                action=(
+                    "提高 checker_run_call_limit / thread_call_limit，"
+                    "或精简 messages / plan 后让 manager 重新触发 hard gate。"
+                ),
+                rationale="预算不足或输入过长会导致 structured_response 缺失。",
+                priority="medium",
+            )
+        ],
         confidence="low",
     ).model_dump()
-
-
-@tool
-async def check_alignment(messages: list[BaseMessage], plan_path: str = "") -> dict:
-    """
-    检查 messages 消息流的执行路径是否偏离 plan.json 制定的实现流程。
-    输入:
-      - messages:  langgraph 消息流（list[BaseMessage]），工具内部用
-                   get_buffer_string 序列化为 transcript 文本。
-      - plan_path: plan 文件路径（项目相对或绝对）；空串时默认取
-                   'SessionDB/<current_thread_id>/plan.json'。
-    流程: 1) 读 plan.json；2) 序列化 messages；3) 拼 HumanMessage 喂给
-         checker_agent；4) 返回 CheckerReport 的 dict。
-    返回: CheckerReport 的 dict —— overall_alignment / drift_score /
-         current_phase / progress_summary / deviations / problems /
-         suggestions / confidence。plan 缺失 / 非法时返回 off_track 兜底报告。
-    """
-    if not plan_path:
-        plan_path = f"SessionDB/{current_thread_id()}/plan.json"
-    plan = _load_plan(plan_path)
-    transcript = get_buffer_string(messages)
-
-    if isinstance(plan, str):
-        return _fallback_report(
-            current_phase="plan 不可用",
-            progress_summary="无法读取 / 解析 plan，跳过 checker_agent，直接给出兜底报告。",
-            problems=[plan],
-            suggestions=[
-                Suggestion(
-                    action=(
-                        "停下当前实现，先在 SessionDB/<thread_id>/plan.json 里把 goal / "
-                        "milestones / subtasks / notes 写清楚再继续。"
-                    ),
-                    rationale="没有 plan 就没有对齐标尺，任何偏离判断都是瞎猜。",
-                    priority="high",
-                ),
-            ],
-        )
-
-    user_content = (
-        "=== PLAN ===\n"
-        f"{json.dumps(plan, ensure_ascii=False, indent=2)}\n\n"
-        "=== MESSAGES TRANSCRIPT ===\n"
-        f"{transcript}\n\n"
-        "请基于以上 plan 和 transcript 评估偏离情况，以 CheckerReport "
-        "结构化 JSON 输出（不要 markdown fence、不要自由文本）。"
-    )
-
-    state = await checker_agent.ainvoke({"messages": [HumanMessage(content=user_content)]})
-    report = state.get("structured_response")
-
-    if not isinstance(report, CheckerReport):
-        return _fallback_report(
-            current_phase="checker 自身失败",
-            progress_summary="checker_agent 未返回合法的 CheckerReport 结构化响应。",
-            problems=[
-                "checker_agent 未能产出结构化 CheckerReport，"
-                "可能是调用预算被提前截断或模型输出漂移。"
-            ],
-            suggestions=[
-                Suggestion(
-                    action=(
-                        "提高 checker_run_call_limit / thread_call_limit，"
-                        "或精简 messages / plan 后重试 check_alignment。"
-                    ),
-                    rationale="预算不足或输入过长会导致 structured_response 缺失。",
-                    priority="medium",
-                ),
-            ],
-            drift_score=80,
-        )
-    return report.model_dump()

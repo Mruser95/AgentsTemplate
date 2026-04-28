@@ -3,4 +3,5 @@ __pycache__/
 ._*
 .schedule/
 SessionDB/
+Logs/
 .env

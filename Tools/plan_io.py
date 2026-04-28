@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Agents.checker import checker_agent, CheckerReport  # noqa: E402
+from Agents.checker import checker_agent, CheckerReport, checker_failed_report  # noqa: E402
 from Tools._context import current_thread_id  # noqa: E402
 
 
@@ -66,6 +66,10 @@ class PlanIOInput(BaseModel):
     result_summary: Optional[str] = Field(
         default=None,
         description="action=update_subtask_status 可选：本 subtask 的结果一句话",
+    )
+    state: Annotated[Optional[dict], InjectedState] = Field(
+        default=None,
+        description="LangGraph 注入的 agent state（含 messages），LLM 不可见、不需要填",
     )
 
 
@@ -126,6 +130,8 @@ def _run_checker_sync(messages: list, plan: dict) -> dict:
     user_content = _build_checker_user_content(plan, messages)
     state = checker_agent.invoke({"messages": [HumanMessage(content=user_content)]})
     report = state.get("structured_response")
+    if not isinstance(report, CheckerReport):
+        return checker_failed_report()
     return report.model_dump()
 
 
@@ -135,6 +141,8 @@ async def _run_checker_async(messages: list, plan: dict) -> dict:
         {"messages": [HumanMessage(content=user_content)]}
     )
     report = state.get("structured_response")
+    if not isinstance(report, CheckerReport):
+        return checker_failed_report()
     return report.model_dump()
 
 

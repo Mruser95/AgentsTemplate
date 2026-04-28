@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 load_dotenv(PROJECT_ROOT / '.env')
 
 from Tools._context import bump_budget, current_thread_id  # noqa: E402
-from Tools._workspace import ensure_workspace  # noqa: E402
+from Tools._workspace import ensure_workspace, workspace_env  # noqa: E402
 
 with open(PROJECT_ROOT / 'config.yaml', 'r', encoding='utf-8') as file:
     config = yaml.safe_load(file)
@@ -28,10 +28,20 @@ shell_restriction: bool = config['shell_restriction']
 shell_permissions: list[str] = [var.strip() for cmds in config['shell_permissions'].values() for var in cmds]
 shell_count_limit: int = config['shell_count_limit']
 checker_prompt: str = config['shell_checker_prompt']
+shell_default_timeout: int = int(config.get('shell_default_timeout', 120))
+shell_max_timeout: int = int(config.get('shell_max_timeout', 600))
 
 
 class SafeShellInput(BaseModel):
     command: str = Field(description="Shell command(s) to execute")
+    timeout: int | None = Field(
+        default=None,
+        description=(
+            f"Optional per-command timeout in seconds. Default {shell_default_timeout}s, "
+            f"capped at {shell_max_timeout}s. Bump it for slow operations like "
+            "pip install, network downloads, or long-running tests."
+        ),
+    )
 
 class CheckerOutput(BaseModel):
     allowed: bool = Field(description="Whether the command is allowed to execute")
@@ -66,12 +76,20 @@ def check_command(command: str) -> tuple[bool, list[str]]:
     return len(denied) == 0, denied
 
 
-llm = ChatOpenAI(
-    model=os.getenv("small_llm_model"),
-    api_key=os.getenv("small_llm_key"),
-    base_url=os.getenv("small_llm_base_url"),
-    streaming=False,
-)
+_llm: ChatOpenAI | None = None
+
+
+def _get_checker_llm() -> ChatOpenAI:
+    # 懒加载：避免 import 时构建 httpx client（SOCKS 代理无 socksio 会 ImportError）
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(
+            model=os.getenv("small_llm_model"),
+            api_key=os.getenv("small_llm_key"),
+            base_url=os.getenv("small_llm_base_url"),
+            streaming=False,
+        )
+    return _llm
 
 
 def _decode(data: bytes) -> str:
@@ -84,7 +102,13 @@ def _decode(data: bytes) -> str:
         return data.decode(locale.getpreferredencoding(False), errors="replace")
 
 
-def _run_subprocess(command: str, timeout: int = 30, cwd: str | None = None) -> str:
+def _run_subprocess(
+    command: str,
+    timeout: int | None = None,
+    cwd: str | None = None,
+    env: dict | None = None,
+) -> str:
+    timeout = min(int(timeout), shell_max_timeout) if timeout and timeout > 0 else shell_default_timeout
     try:
         proc = subprocess.run(
             command,
@@ -92,6 +116,7 @@ def _run_subprocess(command: str, timeout: int = 30, cwd: str | None = None) -> 
             capture_output=True,
             timeout=timeout,
             cwd=cwd,
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return f"Command timed out after {timeout}s"
@@ -105,29 +130,41 @@ def _run_subprocess(command: str, timeout: int = 30, cwd: str | None = None) -> 
     return stdout + (f"\n{stderr}" if stderr.strip() else "")
 
 
-def _execute(command: str, timeout: int = 30, cwd: str | None = None) -> str:
+def _execute(
+    command: str,
+    timeout: int | None = None,
+    cwd: str | None = None,
+    env: dict | None = None,
+) -> str:
     allowed, denied = check_command(command)
     if not allowed:
         return f"Command denied, contains unauthorized commands: {', '.join(denied)}"
-    response = llm.with_structured_output(CheckerOutput).invoke(
-        [SystemMessage(content=checker_prompt), HumanMessage(content=command)]
-    )
-    if not response.allowed:
-        return f"Command denied by checker agent: {response.reason}"
-    return _run_subprocess(command, timeout, cwd=cwd)
+    # 仅在开启 shell_restriction 时跑 LLM 二次审查；关闭时白名单已是兜底，跳过可省每条 3-8s 延迟
+    if shell_restriction:
+        response = _get_checker_llm().with_structured_output(CheckerOutput).invoke(
+            [SystemMessage(content=checker_prompt), HumanMessage(content=command)]
+        )
+        if not response.allowed:
+            return f"Command denied by checker agent: {response.reason}"
+    return _run_subprocess(command, timeout, cwd=cwd, env=env)
 
 
-async def _execute_async(command: str, timeout: int = 30, cwd: str | None = None) -> str:
+async def _execute_async(
+    command: str,
+    timeout: int | None = None,
+    cwd: str | None = None,
+    env: dict | None = None,
+) -> str:
     allowed, denied = check_command(command)
     if not allowed:
         return f"Command denied, contains unauthorized commands: {', '.join(denied)}"
-    response = await llm.with_structured_output(CheckerOutput).ainvoke(
-        [SystemMessage(content=checker_prompt), HumanMessage(content=command)]
-    )
-    if not response.allowed:
-        return f"Command denied by checker agent: {response.reason}"
-    # subprocess 本身是阻塞 IO，放线程池；LLM 安全检查已经是 async，不再绕线程
-    return await asyncio.to_thread(_run_subprocess, command, timeout, cwd)
+    if shell_restriction:
+        response = await _get_checker_llm().with_structured_output(CheckerOutput).ainvoke(
+            [SystemMessage(content=checker_prompt), HumanMessage(content=command)]
+        )
+        if not response.allowed:
+            return f"Command denied by checker agent: {response.reason}"
+    return await asyncio.to_thread(_run_subprocess, command, timeout, cwd, env)
 
 
 class SafeShell(BaseTool):
@@ -146,18 +183,28 @@ class SafeShell(BaseTool):
             "Stop using this tool and respond directly."
         )
 
-    def _run(self, command: str) -> str:
+    def _run(self, command: str, timeout: int | None = None) -> str:
         tid = current_thread_id()
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
             return self._budget_response(tid)
-        result = _execute(command, cwd=str(ensure_workspace(tid)))
+        result = _execute(
+            command,
+            timeout=timeout,
+            cwd=str(ensure_workspace(tid)),
+            env=workspace_env(tid),
+        )
         return f"{result}\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
 
-    async def _arun(self, command: str) -> str:
+    async def _arun(self, command: str, timeout: int | None = None) -> str:
         tid = current_thread_id()
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
             return self._budget_response(tid)
-        result = await _execute_async(command, cwd=str(ensure_workspace(tid)))
+        result = await _execute_async(
+            command,
+            timeout=timeout,
+            cwd=str(ensure_workspace(tid)),
+            env=workspace_env(tid),
+        )
         return f"{result}\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"

@@ -20,6 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
+from Tools.tavily import TavilySearch  # noqa: E402
+from Tools._context import current_thread_id  # noqa: E402
+from Tools._workspace import ensure_workspace  # noqa: E402
 from agents_prompt import tester_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -31,7 +34,16 @@ tester_run_call_limit: int = _config.get("tester_run_call_limit", 30)
 tester_thread_call_limit: int = _config.get("tester_thread_call_limit", 100)
 tester_exit_behavior: str = _config.get("tester_exit_behavior", "end")
 
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "Logs" / "TestDatasets.json"
+DATASET_FILENAME = "TestDatasets.json"
+FALLBACK_OUTPUT_PATH = PROJECT_ROOT / "Logs" / DATASET_FILENAME
+
+
+def _resolve_output_path() -> Path:
+    """优先把数据集写到当前 thread 的 workspace；没有 thread 上下文时回退 Logs/。"""
+    tid = current_thread_id()
+    if tid:
+        return ensure_workspace(tid) / DATASET_FILENAME
+    return FALLBACK_OUTPUT_PATH
 
 
 llm = ChatOpenAI(
@@ -53,10 +65,13 @@ TestCaseCategory = Literal[
 ]
 
 class TestCase(BaseModel):
+    model_config = {"extra": "forbid"}
+
     name: str = Field(
         description=(
             "简短蛇形命名，描述被测行为而非序号，"
             "例如 'happy_path_perfect_square' / 'error_input_negative'。"
+            "禁止使用 'id' / 'index' 等序号字段（schema 里没有这个字段）。"
         )
     )
     category: TestCaseCategory = Field(
@@ -110,12 +125,18 @@ class TestCase(BaseModel):
 
 
 class TestDataset(BaseModel):
+    model_config = {"extra": "forbid"}
+
     task_summary: str = Field(
         description="一句话复述本数据集为哪个任务生成，便于追溯。"
     )
     cases: list[TestCase] = Field(
         default_factory=list,
-        description="本次生成的测试用例列表（落盘时作为 JSON 顶层数组）。"
+        description=(
+            "本次生成的测试用例列表（落盘时作为 JSON 顶层数组）。"
+            "每个元素必须严格包含 name / category / description / input / "
+            "expected_output / judgment_criteria 六个字段，禁止额外字段（如 id）。"
+        ),
     )
 
 
@@ -132,7 +153,7 @@ def build_tester_agent(task_specific_prompt: str = ""):
     )
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell()],
+        tools=[SkillLibrary(), SafeShell(), TavilySearch()],
         system_prompt=system_prompt,
         response_format=TestDataset,
         middleware=[
@@ -197,27 +218,27 @@ def _validate_task_prompt(task_prompt: str) -> None:
         )
 
 
-def generate_test_dataset(task_prompt: str, output_path: Optional[Path] = None) -> list[dict]:
+def generate_test_dataset(task_prompt: str, output_path: Optional[Path] = None) -> tuple[list[dict], Path]:
     _validate_task_prompt(task_prompt)
-    out = output_path or DEFAULT_OUTPUT_PATH
+    out = output_path or _resolve_output_path()
     agent = build_tester_agent(task_specific_prompt=task_prompt)
     state = agent.invoke({"messages": [HumanMessage(content=_INITIAL_HUMAN)]})
     dataset = _ensure_dataset(state.get("structured_response"))
     _write_dataset_atomic(dataset.cases, out)
-    return [case.model_dump(mode="json") for case in dataset.cases]
+    return [case.model_dump(mode="json") for case in dataset.cases], out
 
 
 async def agenerate_test_dataset(
     task_prompt: str, output_path: Optional[Path] = None,
-) -> list[dict]:
+) -> tuple[list[dict], Path]:
     _validate_task_prompt(task_prompt)
-    out = output_path or DEFAULT_OUTPUT_PATH
+    out = output_path or _resolve_output_path()
     agent = build_tester_agent(task_specific_prompt=task_prompt)
     state = await agent.ainvoke({"messages": [HumanMessage(content=_INITIAL_HUMAN)]})
     dataset = _ensure_dataset(state.get("structured_response"))
     # 原子写入是阻塞 IO；从 async 路径调时放线程池
     await asyncio.to_thread(_write_dataset_atomic, dataset.cases, out)
-    return [case.model_dump(mode="json") for case in dataset.cases]
+    return [case.model_dump(mode="json") for case in dataset.cases], out
 
 
 tester_agent = build_tester_agent()
@@ -231,29 +252,37 @@ _DISPATCH_TESTER_DESC = (
     "task_prompt 必须自包含：清晰描述被测任务（输入 schema / 输出 schema / 错误语义 / "
     "边界条件 / 哪些字段一定不能臆造），子代理只能看到这一段。tester 不实现任务、"
     "不跑被测代码，只产出一份结构化 TestDataset（task_summary + cases）并落盘到 "
-    "Logs/TestDatasets.json。返回值是一段 JSON：包含 count / output_path / cases。"
+    "当前会话 workspace 下的 TestDatasets.json（无 thread 上下文时回退 Logs/TestDatasets.json）。"
+    "返回值是一段 JSON：包含 count / output_path / cases。"
     "适合'先有任务规格、再生成验收数据'的环节；不要在不清楚被测函数 schema 时调用，"
     "会得到臆造字段的垃圾数据。"
 )
 
 
-def _format_dispatch_payload(cases: list[dict]) -> str:
+def _format_output_path(out: Path) -> str:
+    try:
+        return str(out.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(out)
+
+
+def _format_dispatch_payload(cases: list[dict], out: Path) -> str:
     payload = {
         "count": len(cases),
-        "output_path": str(DEFAULT_OUTPUT_PATH.relative_to(PROJECT_ROOT)),
+        "output_path": _format_output_path(out),
         "cases": cases,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 def _dispatch_tester_sync(task_prompt: str) -> str:
-    cases = generate_test_dataset(task_prompt)
-    return _format_dispatch_payload(cases)
+    cases, out = generate_test_dataset(task_prompt)
+    return _format_dispatch_payload(cases, out)
 
 
 async def _dispatch_tester_async(task_prompt: str) -> str:
-    cases = await agenerate_test_dataset(task_prompt)
-    return _format_dispatch_payload(cases)
+    cases, out = await agenerate_test_dataset(task_prompt)
+    return _format_dispatch_payload(cases, out)
 
 
 dispatch_tester = StructuredTool.from_function(

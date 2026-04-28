@@ -7,6 +7,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pathlib import Path
 from pydantic import BaseModel, Field, PrivateAttr
 from dotenv import load_dotenv
+import asyncio
 import json
 import os
 import sys
@@ -22,10 +23,11 @@ from Agents.coder import (  # noqa: E402
     FileChange,
     UsageExample,
     ainvoke_with_lint_gate,
+    astream_collect_final_state,
     build_coder_agent,
     invoke_with_lint_gate,
 )
-from Tools._context import bump_budget, current_thread_id  # noqa: E402
+from Tools._context import OnEvent, bump_budget, current_thread_id, on_event_var  # noqa: E402
 from Tools._workspace import workspace_info  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.working_todo import WorkingTodo  # noqa: E402
@@ -162,6 +164,16 @@ class DispatchCoderInput(BaseModel):
             "不得违反的边界。可选但强烈建议填。"
         ),
     )
+    step_index: int = Field(
+        description=(
+            "对应 workingTodo.md 中的 step 1-based 索引——本次 dispatch_coder 派发的"
+            "就是该 step 描述的那条任务。子代理返回 status=DONE 时，框架会**自动**调"
+            " working_todo.mark_done(step_index)，无需你再手勾；非 DONE 状态不会勾，"
+            "由你按需补派或重派同一 step_index。"
+            "强制 1:1：每条 step 必须且只能对应一次 dispatch_coder 调用；并行派发时"
+            "也要给出各自正确的 step_index。"
+        ),
+    )
 
 
 def _format_child_initial(task_name: str) -> str:
@@ -199,16 +211,29 @@ class DispatchCoder(BaseTool):
         "它只能看到通用的 coder_prompt 编码规范，以及你在 task_prompt 里写的任务特定要求。"
         "每次调用都会启动一个干净的子代理（工具预算独立，上下文隔离），所以可以放心多派；"
         "但每个 task_prompt 必须自包含——子代理看不到其他子任务的 prompt 或整体计划。"
+        "**与 workingTodo 强绑定**：每次调用必须传 step_index（1-based），与 write_steps "
+        "时落盘的 step 顺序对齐；子代理 status=DONE 时框架会自动 mark_done(step_index)，"
+        "你不必再手勾；非 DONE 不会自动勾，你按需补派 / 重派同一 step_index。"
         "返回值是子代理产出的 CoderReport JSON（字段见下：status / task_name / summary / "
         "modules / usage / usage_examples / file_changes / verification / key_decisions / "
-        "open_issues）。请解析这段 JSON 再决定下一步。"
+        "open_issues），末尾会附一行 [auto-mark] 提示勾选结果。请解析这段 JSON 再决定下一步。"
     )
     args_schema: Type[BaseModel] = DispatchCoderInput
     max_tool_calls: int = Field(default=dispatch_count_limit)
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)
+    _todo: WorkingTodo = PrivateAttr(default_factory=WorkingTodo)
 
     def reset(self) -> None:
         self._call_counts.clear()
+
+    def _auto_mark_done(self, report_json: str, step_index: int) -> str:
+        try:
+            status = (json.loads(report_json).get("status") or "").upper()
+        except Exception:
+            status = ""
+        if status != "DONE":
+            return f"[auto-mark] 跳过 step {step_index}（status={status or 'UNKNOWN'}）。"
+        return f"[auto-mark] {self._todo._run('mark_done', step_index=step_index)}"
 
     def _dispatch(self, task_name: str, task_prompt: str, context: str) -> str:
         task_block = _format_task_specific_prompt(task_name, task_prompt, context)
@@ -218,15 +243,20 @@ class DispatchCoder(BaseTool):
 
     async def _adispatch(self, task_name: str, task_prompt: str, context: str) -> str:
         task_block = _format_task_specific_prompt(task_name, task_prompt, context)
-        child_agent = build_coder_agent(task_specific_prompt=task_block)
-        report = await ainvoke_with_lint_gate(child_agent, _format_child_initial(task_name))
+        child_agent = await asyncio.to_thread(
+            build_coder_agent, task_specific_prompt=task_block,
+        )
+        on_event = on_event_var.get()
+        report = await ainvoke_with_lint_gate(
+            child_agent, _format_child_initial(task_name), on_event=on_event,
+        )
         return _coder_report_to_json(report)
 
-    def _format_response(self, task_name: str, report_json: str, n: int, rem: int) -> str:
+    def _format_response(self, task_name: str, report_json: str, n: int, rem: int, mark_msg: str = "") -> str:
         return (
             f"===== 子代理 CoderReport（子任务：{task_name}）=====\n"
             f"{report_json}\n\n"
-            f"[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
+            f"[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]\n{mark_msg}"
         )
 
     def _budget_exceeded(self, tid: str) -> str:
@@ -235,7 +265,7 @@ class DispatchCoder(BaseTool):
             "dispatch_coder 预算已耗尽；请基于现有子任务结果直接产出最终 TaskerReport。"
         )
 
-    def _run(self, task_name: str, task_prompt: str, context: str = "") -> str:
+    def _run(self, task_name: str, task_prompt: str, step_index: int, context: str = "") -> str:
         tid = current_thread_id()
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
@@ -244,9 +274,10 @@ class DispatchCoder(BaseTool):
             report_json = self._dispatch(task_name, task_prompt, context)
         except Exception as e:
             report_json = _format_exception_report(task_name, e)
-        return self._format_response(task_name, report_json, n, rem)
+        mark_msg = self._auto_mark_done(report_json, step_index)
+        return self._format_response(task_name, report_json, n, rem, mark_msg)
 
-    async def _arun(self, task_name: str, task_prompt: str, context: str = "") -> str:
+    async def _arun(self, task_name: str, task_prompt: str, step_index: int, context: str = "") -> str:
         tid = current_thread_id()
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
@@ -255,7 +286,8 @@ class DispatchCoder(BaseTool):
             report_json = await self._adispatch(task_name, task_prompt, context)
         except Exception as e:
             report_json = _format_exception_report(task_name, e)
-        return self._format_response(task_name, report_json, n, rem)
+        mark_msg = self._auto_mark_done(report_json, step_index)
+        return self._format_response(task_name, report_json, n, rem, mark_msg)
 
 
 # Tasker Coder Agent ==================================================================
@@ -299,7 +331,23 @@ _DISPATCH_TASKER_DESC = (
 def _finalize_tasker_report(report: Any) -> str:
     if isinstance(report, TaskerReport):
         return report.model_dump_json(indent=2)
-    return "tasker_coder 未返回结构化 TaskerReport。"
+    fallback = TaskerReport(
+        overall_status="需用户介入",
+        project_overview="tasker_coder 未产出结构化 TaskerReport。",
+        architecture="",
+        main_modules=[],
+        usage="",
+        usage_examples=[],
+        subtasks=[],
+        file_changes=[],
+        key_decisions=[],
+        user_needs_attention=[
+            "tasker_coder 未返回结构化 TaskerReport：可能是 system prompt 过长被截断、"
+            "工具预算耗尽，或模型未走完结构化输出流程。**禁止**用同一 task_prompt "
+            "原样重派，请先精简 prompt 或拆分 subtask 再继续。",
+        ],
+    )
+    return fallback.model_dump_json(indent=2)
 
 
 def _dispatch_tasker_coder_sync(task_prompt: str) -> str:
@@ -309,18 +357,30 @@ def _dispatch_tasker_coder_sync(task_prompt: str) -> str:
     return _finalize_tasker_report(state.get("structured_response"))
 
 
-async def _dispatch_tasker_coder_async(task_prompt: str) -> str:
-    state = await tasker_coder_agent.ainvoke(
-        {"messages": [HumanMessage(content=task_prompt)]}
+async def _dispatch_tasker_coder_inner(task_prompt: str) -> str:
+    on_event = on_event_var.get()
+    state = await astream_collect_final_state(
+        tasker_coder_agent,
+        [HumanMessage(content=task_prompt)],
+        on_event=on_event,
     )
     return _finalize_tasker_report(state.get("structured_response"))
 
-adispatch_tasker_coder = _dispatch_tasker_coder_async
+
+async def adispatch_tasker_coder(
+    task_prompt: str, on_event: OnEvent | None = None,
+) -> str:
+    token = on_event_var.set(on_event) if on_event is not None else None
+    try:
+        return await _dispatch_tasker_coder_inner(task_prompt)
+    finally:
+        if token is not None:
+            on_event_var.reset(token)
 
 
 dispatch_tasker_coder = StructuredTool.from_function(
     func=_dispatch_tasker_coder_sync,
-    coroutine=_dispatch_tasker_coder_async,
+    coroutine=_dispatch_tasker_coder_inner,
     name="dispatch_tasker_coder",
     description=_DISPATCH_TASKER_DESC,
 )
