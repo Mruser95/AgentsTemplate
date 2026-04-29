@@ -1,0 +1,60 @@
+services:
+  agent-api:
+    build:
+      context: ..
+      dockerfile: Docker/Dockerfile
+      args:
+        INSTALL_PLAYWRIGHT: "true"
+    image: agents-template:latest
+    container_name: agents-template
+    restart: unless-stopped
+    ports:
+      - "8973:8000"
+    env_file:
+      - ../.env
+    environment:
+      RAG_DSN: postgresql://postgres:postgres@postgres:5432/rag
+    volumes:
+      - ../config.yaml:/app/config.yaml:ro
+      - ../SessionDB:/app/SessionDB
+      - ../Logs:/app/Logs
+      - ../Memory:/app/Memory
+      - ../Knowledge:/app/Knowledge
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  webui:
+    image: nginx:alpine
+    container_name: agents-webui
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ../WebUI:/usr/share/nginx/html:ro
+    depends_on:
+      - agent-api
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: agents-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: rag
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pg_data:

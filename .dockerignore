@@ -1,1 +1,21 @@
- .venv/
+.git/
+.venv/
+venv/
+._*
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+# 运行时数据：完全靠 docker-compose 的 volume 挂载，不进镜像
+Logs/
+SessionDB/
+Knowledge/
+.schedule/
+node_modules/
+*.log
+.env
