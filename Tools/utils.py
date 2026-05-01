@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import os
 import venv
+from contextvars import ContextVar
 from pathlib import Path
+from typing import Any
 
+from langchain_core.runnables.config import ensure_config
+
+
+# Workspace 路径 =======================================================
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 _BIN = "Scripts" if os.name == "nt" else "bin"
 _PY = "python.exe" if os.name == "nt" else "python"
@@ -26,6 +32,15 @@ def ensure_workspace(thread_id: str) -> Path:
     return wd
 
 
+def is_inside(child: Path | str, parent: Path | str) -> bool:
+    try:
+        Path(child).resolve().relative_to(Path(parent).resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+# 私有 venv =============================================================
 def workspace_env(thread_id: str) -> dict:
     vd = venv_dir(thread_id)
     if not (vd / _BIN / _PY).exists():
@@ -37,14 +52,6 @@ def workspace_env(thread_id: str) -> dict:
     env.pop("PYTHONHOME", None)
     env.pop("PYTHONPATH", None)
     return env
-
-
-def is_inside(child: Path | str, parent: Path | str) -> bool:
-    try:
-        Path(child).resolve().relative_to(Path(parent).resolve())
-        return True
-    except (ValueError, OSError):
-        return False
 
 
 def workspace_info(thread_id: str) -> str:
@@ -68,3 +75,23 @@ def workspace_info(thread_id: str) -> str:
         "- 装包直接 `pip install <pkg>`；**不要** `--user`、`python -m venv` / `conda create`、"
         "或用绝对路径调宿主 Python（`/usr/bin/python3` 之类会绕过隔离）。\n"
     )
+
+
+# 线程上下文 =============================================================
+DEFAULT_THREAD_ID = "_default"
+
+
+def current_thread_id() -> str:
+    cfg: dict[str, Any] = ensure_config()
+    tid = (cfg.get("configurable") or {}).get("thread_id")
+    return str(tid) if tid else DEFAULT_THREAD_ID
+
+
+# 调用配额 ===============================================================
+def bump_budget(counts: dict[str, int], thread_id: str, limit: int) -> tuple[bool, int, int]:
+    cur = counts.get(thread_id, 0)
+    if cur >= limit:
+        return False, cur, 0
+    n = cur + 1
+    counts[thread_id] = n
+    return True, n, limit - n

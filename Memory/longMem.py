@@ -209,5 +209,5 @@ async def search_long_memory(query: str, k: int = 5) -> list[dict]:
     返回 top-k 条，每条含 id / content / memory_type / importance / context /
     tags / timestamp / similarity。
     """
-    from Tools._context import current_thread_id
+    from Tools.utils import current_thread_id
     return await search_neighbors(query, k=k, thread_id=current_thread_id())

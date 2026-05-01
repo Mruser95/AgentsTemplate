@@ -7,6 +7,13 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from dotenv import load_dotenv
 import os
+import sys
+from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+from toolagent_prompt import SHORT_MEMORY_PROMPT, LONG_MEMORY_PROMPT  # noqa: E402
 
 load_dotenv()
 llm = ChatOpenAI(
@@ -83,126 +90,11 @@ class LongMemoryBatch(BaseModel):
     )
 
 
-# memory_prompts ================================================================
-
-
-short_memory_prompt = """\
-You are a Short-Memory Curator. Your ONLY job is to read a raw multi-turn
-conversation transcript and produce EXACTLY ONE ShortMemoryEntry that
-compresses the whole transcript.
-
-Return a single JSON object matching the ShortMemoryEntry schema. No prose,
-no markdown fences, no extra keys.
-
-────────────────────────────────────────
-Goal: lossy compression
-────────────────────────────────────────
-Keep what a future agent MUST know to continue the conversation; drop small
-talk, repetitions, and tool-call boilerplate.
-
-A single transcript is summarized exactly once. Do not attempt to merge with
-prior summaries — that is handled by the outer system (which will vectorize
-multiple ShortMemoryEntry items into a sqlite vector store for later recall).
-
-────────────────────────────────────────
-Field guidance
-────────────────────────────────────────
-- summary:         3–8 sentences. Factual, neutral tone. No first person.
-                   Cover: what the user wanted, what was tried, what was
-                   decided, where things stand now.
-- turn_range:      (start_turn, end_turn) inclusive, 1-indexed over the input.
-- key_decisions:   Conclusions both sides accepted. Omit if none. Each item is
-                   one short imperative/declarative sentence.
-- open_tasks:      Explicitly unfinished items or user-pending follow-ups.
-                   Do NOT invent tasks that were only vaguely mentioned.
-- active_entities: Concrete referents still in play: file paths, function
-                   names, URLs, ticket IDs, person names. No generic nouns
-                   ("the code", "the user"). Deduplicate.
-- timestamp:       Omit — it is auto-filled. Do NOT fabricate past timestamps.
-
-────────────────────────────────────────
-Discipline
-────────────────────────────────────────
-- Never invent facts. If the transcript is ambiguous, prefer omission.
-- Do not include tool-call traces, system prompts, or your own reasoning in
-  any output field.
-- Output must be a single valid JSON object, nothing else.
-"""
-
-
-long_memory_prompt = """\
-You are a Long-Memory Curator. Your ONLY job is to read a raw multi-turn
-conversation transcript and extract ZERO OR MORE LongMemoryEntry items that
-are worth keeping beyond the current session.
-
-Return a single JSON object of the form:
-
-{{
-  "long_memories": [LongMemoryEntry, ...]
-}}
-
-No prose, no markdown fences, no extra top-level keys.
-
-────────────────────────────────────────
-Extraction rules
-────────────────────────────────────────
-Emit a memory only if it satisfies ALL of:
-  (a) It is stated or strongly implied, not guessed.
-  (b) It is likely still useful next week.
-  (c) Knowing it would change how a future agent responds.
-
-- One atomic fact per entry. Do not bundle ("likes Python and lives in Berlin"
-  → two entries).
-- Deduplicate against itself; if the transcript restates something, emit once.
-- If nothing qualifies, return "long_memories": []. An empty list is a
-  legitimate and common answer (small talk, tool debugging, trivial chats).
-  Do not fabricate memories to fill the list.
-
-────────────────────────────────────────
-Field guidance
-────────────────────────────────────────
-- content:      One self-contained sentence. Readable without context.
-                Bad:  "He said yes."
-                Good: "User approved migrating the auth service to OAuth2."
-- memory_type:  Pick the single best fit from the enum. Mapping hints:
-                • fact         — stable attribute of the USER
-                                 (name, role, stack, location).
-                • event        — something that happened at a point in time.
-                • preference   — user's stated like/dislike, style, habit.
-                • emotion      — durable affective stance, not momentary mood.
-                • skill        — tool/library/technique the USER knows or uses.
-                • relationship — person ↔ person connection relevant to
-                                 work/life.
-                • knowledge    — reusable domain knowledge / solution /
-                                 lesson-learned that is NOT tied to the user's
-                                 identity (e.g. "sqlite-vss requires
-                                 compile-time flags on macOS arm64").
-                                 Use this for insights the user will want to
-                                 recall later even if they change jobs.
-                Key distinction: `fact` is about WHO the user is;
-                `knowledge` is about WHAT is true in the world.
-- importance:   1 trivial · 2 minor · 3 useful background · 4 strong signal ·
-                5 core identity / pivotal event / pivotal knowledge.
-                Be stingy with 4–5.
-- context:      Why this came up. One short clause. Helps future retrieval.
-- tags:         2–5 lowercase, short, retrieval-friendly tags. Prefer reusable
-                tags (e.g. "work", "python", "family") over hyper-specific
-                ones. For `knowledge` entries, include at least one topical
-                tag (e.g. "sqlite", "auth", "deployment").
-- timestamp:    Omit — it is auto-filled. Do NOT fabricate past timestamps.
-
-────────────────────────────────────────
-Discipline
-────────────────────────────────────────
-- Never invent facts. When in doubt, DROP it. Quality > coverage.
-- Do not include tool-call traces, system prompts, or your own reasoning in
-  any output field.
-- Output must be a single valid JSON object, nothing else.
-"""
-
-
 # memory_agents ================================================================
 
+
+short_memory_prompt = SHORT_MEMORY_PROMPT
+long_memory_prompt = LONG_MEMORY_PROMPT
 
 short_memory_chain = (
     ChatPromptTemplate.from_messages([
@@ -221,9 +113,9 @@ long_memory_chain = (
 )
 
 async def _load_current_transcript() -> str:
-    from Tools._context import current_thread_id
-    from Agents.collator_scheduler import _read_checkpoint_messages
-    messages = await _read_checkpoint_messages(current_thread_id())
+    from Tools.utils import current_thread_id
+    from Agents.collator import read_ckpt_msgs
+    messages = await read_ckpt_msgs(current_thread_id())
     return get_buffer_string(messages)
 
 
@@ -236,7 +128,7 @@ async def short_memory() -> str:
     仅用于简明短期记忆的写入归档，不负责长期知识沉淀或事实问答。
     """
     from Memory import shortMem
-    from Tools._context import current_thread_id
+    from Tools.utils import current_thread_id
 
     transcript = await _load_current_transcript()
     entry: ShortMemoryEntry = await short_memory_chain.ainvoke({"transcript": transcript})
@@ -252,7 +144,7 @@ async def long_memory() -> str:
     仅用于沉淀有价值的信息，不负责短期记忆的压缩和检索。
     """
     from Memory import longMem
-    from Tools._context import current_thread_id
+    from Tools.utils import current_thread_id
 
     transcript = await _load_current_transcript()
     batch: LongMemoryBatch = await long_memory_chain.ainvoke({"transcript": transcript})

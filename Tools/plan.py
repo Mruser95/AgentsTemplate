@@ -13,7 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Agents.checker import checker_agent, CheckerReport, checker_failed_report  # noqa: E402
-from Tools._context import current_thread_id  # noqa: E402
+from Tools.utils import current_thread_id  # noqa: E402
 
 
 def _plan_path(thread_id: str) -> Path:
@@ -22,7 +22,7 @@ def _plan_path(thread_id: str) -> Path:
     return d / "plan.json"
 
 
-PlanIOAction = Literal[
+PlanAction = Literal[
     "read",
     "write",
     "update_subtask_status",
@@ -32,8 +32,8 @@ PlanIOAction = Literal[
 ]
 
 
-class PlanIOInput(BaseModel):
-    action: PlanIOAction = Field(
+class PlanInput(BaseModel):
+    action: PlanAction = Field(
         description=(
             "read / write / update_subtask_status / set_milestone_status / "
             "set_plan_status / clear"
@@ -152,8 +152,8 @@ def _format_done_response(subtask_id: str, report: dict) -> str:
         f"=== Checker 强制对齐报告（hard gate） ===\n"
         f"{json.dumps(report, ensure_ascii=False, indent=2)}\n\n"
         "=== 你下一步必须做的（铁律） ===\n"
-        "* on_track / minor_drift  → 调 working_todo(action='clear') 清空当前 todo，"
-        "再开始下一个 subtask（先 working_todo write_steps，再派发 / 执行）。\n"
+        "* on_track / minor_drift  → 调 todo(action='clear') 清空当前 todo，"
+        "再开始下一个 subtask（先 todo write_steps，再派发 / 执行）。\n"
         "* major_drift / off_track → 立即按 suggestions 调整（回滚刚才的状态 / "
         "重做 / 拆分 subtask），**禁止**继续推进；必要时把 plan.status 改回 "
         "'drafting' 并向用户复盘。\n"
@@ -161,11 +161,11 @@ def _format_done_response(subtask_id: str, report: dict) -> str:
     )
 
 
-# PlanIO Tool ==========================================================================
+# Plan Tool ==========================================================================
 
 
-class PlanIO(BaseTool):
-    name: str = "plan_io"
+class Plan(BaseTool):
+    name: str = "plan"
     description: str = (
         "管理 SessionDB/<thread_id>/plan.json 的读写。actions:\n"
         "- read: 返回当前 plan dict 的 JSON 字符串；空 / 非法时返回提示语；\n"
@@ -179,7 +179,7 @@ class PlanIO(BaseTool):
         "- clear: 清空 plan.json。\n"
         "**只有 manager 能用此工具**。"
     )
-    args_schema: Type[BaseModel] = PlanIOInput
+    args_schema: Type[BaseModel] = PlanInput
 
     def _run(
         self, action: str, plan_json: Optional[str] = None, subtask_id: Optional[str] = None, milestone_id: Optional[str] = None,

@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Tools._context import current_thread_id  # noqa: E402
+from Tools.utils import current_thread_id  # noqa: E402
 
 
 def _todo_path(thread_id: str) -> Path:
@@ -18,11 +18,11 @@ def _todo_path(thread_id: str) -> Path:
     return d / "workingTodo.md"
 
 
-WorkingTodoAction = Literal["view", "write_steps", "mark_done", "clear"]
+TodoAction = Literal["view", "write_steps", "mark_done", "clear"]
 
 
-class WorkingTodoInput(BaseModel):
-    action: WorkingTodoAction = Field(
+class TodoInput(BaseModel):
+    action: TodoAction = Field(
         description="view / write_steps / mark_done / clear"
     )
     subtask_id: Optional[str] = Field(
@@ -94,8 +94,8 @@ def _parse_meta(text: str) -> tuple[str, str]:
     return subtask_id, description
 
 
-class WorkingTodo(BaseTool):
-    name: str = "working_todo"
+class Todo(BaseTool):
+    name: str = "todo"
     description: str = (
         "管理 SessionDB/<thread_id>/workingTodo.md（当前 subtask 的派单清单 / markdown checkbox）。"
         "actions: view（查看当前清单） / write_steps（用一份新清单覆盖文件） / "
@@ -104,7 +104,7 @@ class WorkingTodo(BaseTool):
         "每派完一个 dispatch_coder 就立刻 mark_done(对应索引)；任务结束前调 clear。"
         "**manager 只能 view**——用来观察 tasker_coder 当前的派发进度。"
     )
-    args_schema: Type[BaseModel] = WorkingTodoInput
+    args_schema: Type[BaseModel] = TodoInput
     read_only: bool = False
 
     def _run(
@@ -113,7 +113,7 @@ class WorkingTodo(BaseTool):
     ) -> str:
         if self.read_only and action != "view":
             return (
-                f"working_todo 当前为只读模式，action='{action}' 被拒绝；只支持 view。"
+                f"todo 当前为只读模式，action='{action}' 被拒绝；只支持 view。"
                 "派单清单的写入由 tasker_coder 负责，不要绕过。"
             )
 

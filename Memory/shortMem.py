@@ -158,5 +158,5 @@ async def search_short_memory(query: str, k: int = 5) -> list[dict]:
     返回 top-k 条，每条含 id / summary / turn_range / key_decisions / open_tasks /
     active_entities / timestamp / similarity。
     """
-    from Tools._context import current_thread_id
+    from Tools.utils import current_thread_id
     return await search_neighbors(query, k=k, thread_id=current_thread_id())

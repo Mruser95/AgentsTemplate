@@ -7,3 +7,4 @@ SessionDB/
 Logs/
 .env
 .vscode/
+.DS_Store

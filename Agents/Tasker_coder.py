@@ -21,16 +21,17 @@ from Agents.coder import (  # noqa: E402
     CoderModule,
     CoderReport,
     FileChange,
+    OnEvent,
     UsageExample,
     ainvoke_with_lint_gate,
     astream_collect_final_state,
     build_coder_agent,
     invoke_with_lint_gate,
+    on_event_var,
 )
-from Tools._context import OnEvent, bump_budget, current_thread_id, on_event_var  # noqa: E402
-from Tools._workspace import workspace_info  # noqa: E402
+from Tools.utils import bump_budget, current_thread_id, workspace_info  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
-from Tools.working_todo import WorkingTodo  # noqa: E402
+from Tools.todo import Todo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -168,7 +169,7 @@ class DispatchCoderInput(BaseModel):
         description=(
             "对应 workingTodo.md 中的 step 1-based 索引——本次 dispatch_coder 派发的"
             "就是该 step 描述的那条任务。子代理返回 status=DONE 时，框架会**自动**调"
-            " working_todo.mark_done(step_index)，无需你再手勾；非 DONE 状态不会勾，"
+            " todo.mark_done(step_index)，无需你再手勾；非 DONE 状态不会勾，"
             "由你按需补派或重派同一 step_index。"
             "强制 1:1：每条 step 必须且只能对应一次 dispatch_coder 调用；并行派发时"
             "也要给出各自正确的 step_index。"
@@ -221,7 +222,7 @@ class DispatchCoder(BaseTool):
     args_schema: Type[BaseModel] = DispatchCoderInput
     max_tool_calls: int = Field(default=dispatch_count_limit)
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)
-    _todo: WorkingTodo = PrivateAttr(default_factory=WorkingTodo)
+    _todo: Todo = PrivateAttr(default_factory=Todo)
 
     def reset(self) -> None:
         self._call_counts.clear()
@@ -303,7 +304,7 @@ _dispatch_coder_tool = DispatchCoder()
 
 tasker_coder_agent = create_agent(
     model=llm,
-    tools=[SkillLibrary(), _dispatch_coder_tool, WorkingTodo()],
+    tools=[SkillLibrary(), _dispatch_coder_tool, Todo()],
     system_prompt=tasker_coder_prompt,
     response_format=TaskerReport,
     middleware=[

@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Tools._context import bump_budget, current_thread_id  # noqa: E402
+from Tools.utils import bump_budget, current_thread_id  # noqa: E402
 
 with open(PROJECT_ROOT / "config.yaml", encoding="utf-8") as _f:
     _cfg = yaml.safe_load(_f) or {}

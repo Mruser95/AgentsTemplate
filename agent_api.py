@@ -16,8 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 from Agents.manager import manager_recursion_limit, manager_session  # noqa: E402
-from Agents.collator_scheduler import _read_checkpoint_messages, scheduler  # noqa: E402
-from Tools._workspace import ensure_workspace, is_inside  # noqa: E402
+from Agents.collator import read_ckpt_msgs, scheduler  # noqa: E402
+from Tools.utils import ensure_workspace, is_inside  # noqa: E402
 
 API_KEY = os.getenv("API_KEY")
 
@@ -46,7 +46,7 @@ def health() -> dict:
 
 @app.get("/history/{thread_id}", dependencies=[Depends(_auth)])
 async def history(thread_id: str) -> dict:
-    msgs = await _read_checkpoint_messages(thread_id)
+    msgs = await read_ckpt_msgs(thread_id)
     out = []
     for m in msgs:
         item = {"type": m.type, "content": getattr(m, "content", "")}

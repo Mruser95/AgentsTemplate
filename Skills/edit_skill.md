@@ -1,12 +1,12 @@
 ---
-tool: write_file
+tool: edit
 description: 把整段文本写入 workspace 内的文件（替代 cat>EOF / python -c open().write）
 ---
 
-# write_file Tool — SKILL.md
+# edit Tool — SKILL.md
 
 ## 概览
-`write_file` 用于**把整段文本原样写入 workspace 内的文件**。适合：
+`edit` 用于**把整段文本原样写入 workspace 内的文件**。适合：
 - 新建源码文件（如 `image_spider.py`、`requirements.txt`）
 - 整文件覆盖一个已有文件
 - 在末尾追加内容
@@ -36,7 +36,7 @@ description: 把整段文本写入 workspace 内的文件（替代 cat>EOF / pyt
 不确定就先用 `create`；明确要重写历史文件再用 `overwrite`。
 
 ### 3. 写过的文件必须登记到 file_changes
-任何用 `write_file` 写过 / 改过的文件，都要在最终 CoderReport 的 `file_changes`
+任何用 `edit` 写过 / 改过的文件，都要在最终 CoderReport 的 `file_changes`
 里出现（`action='create'` 或 `'modify'`），否则上层 **lint gate 不会跑语法检查**，
 你写错的语法不会被自动打回。
 
@@ -46,8 +46,8 @@ description: 把整段文本写入 workspace 内的文件（替代 cat>EOF / pyt
 
 **新建一个 Python 脚本 + 它的依赖：**
 ```
-1. write_file(path='requirements.txt', content='requests\nbeautifulsoup4\nlxml\n', mode='create')
-2. write_file(path='image_spider.py', content='<完整脚本文本>', mode='create')
+1. edit(path='requirements.txt', content='requests\nbeautifulsoup4\nlxml\n', mode='create')
+2. edit(path='image_spider.py', content='<完整脚本文本>', mode='create')
 3. terminal: python -m py_compile image_spider.py    # 自检语法
 4. （写 CoderReport，把这两个文件都登记到 file_changes）
 ```
@@ -62,10 +62,10 @@ description: 把整段文本写入 workspace 内的文件（替代 cat>EOF / pyt
 
 | 反模式 | 改用 |
 |---|---|
-| `terminal: cat > x.py << 'EOF' ...` | `write_file('x.py', content, 'create')` |
+| `terminal: cat > x.py << 'EOF' ...` | `edit('x.py', content, 'create')` |
 | `terminal: python3 -c "open('x.py','w').write('...')"` | 同上 |
 | `terminal: echo '...' > x.py` | 同上 |
-| `terminal: sed -i 's/A/B/' x.py` 大段重写 | `write_file('x.py', new_content, 'overwrite')` |
+| `terminal: sed -i 's/A/B/' x.py` 大段重写 | `edit('x.py', new_content, 'overwrite')` |
 | 多次 `append` 拼出新文件 | 一次 `create`/`overwrite` 传完整文本 |
 
 ---

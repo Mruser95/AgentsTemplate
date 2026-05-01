@@ -1,4 +1,5 @@
-from typing import Any, Literal
+from contextvars import ContextVar
+from typing import Any, Awaitable, Callable, Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
@@ -17,11 +18,14 @@ if str(PROJECT_ROOT) not in sys.path:
 from Tools.terminal import SafeShell
 from Tools.tavily import TavilySearch
 from Tools.skills import SkillLibrary
-from Tools.write_file import WriteFile
+from Tools.edit import Edit
 from Tools.linter import LintOutcome, alint_paths, lint_paths
-from Tools._context import OnEvent, current_thread_id
-from Tools._workspace import workspace_dir
+from Tools.utils import current_thread_id, workspace_dir
 from agents_prompt import coder_prompt
+
+# 事件流回调（供 Tasker_coder 等下游 agent 复用） 
+OnEvent = Callable[[dict], Awaitable[None]]
+on_event_var: ContextVar[Optional[OnEvent]] = ContextVar("on_event", default=None)
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -160,7 +164,7 @@ def build_coder_agent(task_specific_prompt: str = ""):
     )
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell(), WriteFile(), TavilySearch()],
+        tools=[SkillLibrary(), SafeShell(), Edit(), TavilySearch()],
         system_prompt=system_prompt,
         response_format=CoderReport,
         middleware=[

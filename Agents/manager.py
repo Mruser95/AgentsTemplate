@@ -20,9 +20,9 @@ from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.browser import Browser  # noqa: E402
-from Tools.plan_io import PlanIO  # noqa: E402
-from Tools.working_todo import WorkingTodo  # noqa: E402
-from Tools._workspace import workspace_info  # noqa: E402
+from Tools.plan import Plan  # noqa: E402
+from Tools.todo import Todo  # noqa: E402
+from Tools.utils import workspace_info  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
 from Agents.tester import dispatch_tester  # noqa: E402
@@ -60,8 +60,8 @@ _MANAGER_TOOLS = [
     TavilySearch(),
     Browser(),
     Schedule(),
-    PlanIO(),
-    WorkingTodo(read_only=True),
+    Plan(),
+    Todo(read_only=True),
     retrieve,
     dispatch_tasker_coder,
     dispatch_tester,
@@ -131,7 +131,7 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
                 config=merged_config,
             )
             try:
-                from Agents.collator_scheduler import scheduler
+                from Agents.collator import scheduler
                 scheduler.notify(thread_id)
             except Exception:
                 pass

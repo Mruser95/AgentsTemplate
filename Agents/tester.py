@@ -21,8 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
-from Tools._context import current_thread_id  # noqa: E402
-from Tools._workspace import ensure_workspace  # noqa: E402
+from Tools.utils import current_thread_id, ensure_workspace  # noqa: E402
 from agents_prompt import tester_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")

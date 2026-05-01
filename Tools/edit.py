@@ -11,14 +11,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Tools._context import bump_budget, current_thread_id  # noqa: E402
-from Tools._workspace import ensure_workspace, is_inside  # noqa: E402
+from Tools.utils import bump_budget, current_thread_id, ensure_workspace, is_inside  # noqa: E402
 
 
-WriteMode = Literal["create", "overwrite", "append"]
+Mode = Literal["create", "overwrite", "append"]
 
 
-class WriteFileInput(BaseModel):
+class EditInput(BaseModel):
     path: str = Field(
         description=(
             "目标文件路径，**必须是相对当前 workspace 的相对路径**（如 'image_spider.py'、"
@@ -28,7 +27,7 @@ class WriteFileInput(BaseModel):
     content: str = Field(
         description="要写入的完整文本内容，原样落盘，不做任何转义 / 拼接 / shell quoting。",
     )
-    mode: WriteMode = Field(
+    mode: Mode = Field(
         default="create",
         description=(
             "create: 仅当目标不存在时写入（已存在则报错）；"
@@ -38,8 +37,8 @@ class WriteFileInput(BaseModel):
     )
 
 
-class WriteFile(BaseTool):
-    name: str = "write_file"
+class Edit(BaseTool):
+    name: str = "edit"
     description: str = (
         "把指定文本内容直接写入 workspace 内的文件。**写新文件 / 整文件覆盖时优先用本工具，"
         "不要再用 `cat > x << EOF` / `python3 -c \"open(...).write(...)\"` 等 shell 写法**——"
@@ -49,7 +48,7 @@ class WriteFile(BaseTool):
         "**用本工具写过 / 改过的文件，必须出现在你 CoderReport.file_changes 里**，"
         "上层 lint gate 会据此跑语法检查。"
     )
-    args_schema: Type[BaseModel] = WriteFileInput
+    args_schema: Type[BaseModel] = EditInput
     max_tool_calls: int = Field(default=50)
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)
 
@@ -59,7 +58,7 @@ class WriteFile(BaseTool):
     def _budget_response(self, tid: str) -> str:
         return (
             f"Tool call limit reached ({self.max_tool_calls}) for thread {tid}. "
-            "write_file 预算耗尽；停止写入，直接产出 CoderReport。"
+            "edit 预算耗尽；停止写入，直接产出 CoderReport。"
         )
 
     def _resolve(self, path: str, tid: str) -> tuple[Path | None, str]:
@@ -74,7 +73,7 @@ class WriteFile(BaseTool):
             return None, f"path 越界 workspace：{rel}"
         return target, ""
 
-    def _do_write(self, target: Path, content: str, mode: WriteMode) -> str:
+    def _write(self, target: Path, content: str, mode: Mode) -> str:
         target.parent.mkdir(parents=True, exist_ok=True)
         if mode == "create":
             if target.exists():
@@ -93,7 +92,7 @@ class WriteFile(BaseTool):
     def _format(self, body: str, n: int, rem: int) -> str:
         return f"{body}\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
 
-    def _run(self, path: str, content: str, mode: WriteMode = "create") -> str:
+    def _run(self, path: str, content: str, mode: Mode = "create") -> str:
         tid = current_thread_id()
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
@@ -101,7 +100,7 @@ class WriteFile(BaseTool):
         target, err = self._resolve(path, tid)
         if err:
             return self._format(err, n, rem)
-        return self._format(self._do_write(target, content, mode), n, rem)
+        return self._format(self._write(target, content, mode), n, rem)
 
-    async def _arun(self, path: str, content: str, mode: WriteMode = "create") -> str:
+    async def _arun(self, path: str, content: str, mode: Mode = "create") -> str:
         return self._run(path, content, mode)
