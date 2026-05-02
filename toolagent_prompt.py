@@ -25,8 +25,23 @@ Field guidance
                    Cover: what the user wanted, what was tried, what was
                    decided, where things stand now.
 - turn_range:      (start_turn, end_turn) inclusive, 1-indexed over the input.
+- key_issues:      Concrete problems / blockers / questions that drove the
+                   conversation. One short sentence each. Examples:
+                   "短期记忆缺少错误与解决方案字段", "Docker 构建在 arm64
+                   上找不到 sqlite-vss 二进制". Omit small talk.
 - key_decisions:   Conclusions both sides accepted. Omit if none. Each item is
                    one short imperative/declarative sentence.
+- key_errors:      Concrete errors / failures actually observed in the
+                   transcript (exception messages, failed tool calls, wrong
+                   outputs, mis-configurations). Quote or paraphrase the
+                   identifying detail. Do NOT list potential / hypothetical
+                   errors.
+- resolutions:     How the issues / errors were resolved or worked around.
+                   Each item should be self-contained; when helpful, lead with
+                   the issue it addresses, e.g. "为旧库新增 ALTER TABLE 迁移
+                   语句以补齐 key_issues / key_errors / resolutions 列".
+                   If an issue is still open, do NOT fabricate a resolution —
+                   put it in `open_tasks` instead.
 - open_tasks:      Explicitly unfinished items or user-pending follow-ups.
                    Do NOT invent tasks that were only vaguely mentioned.
 - active_entities: Concrete referents still in play: file paths, function
@@ -257,4 +272,58 @@ Discipline
 - Do not propose edits to other sections of the markdown — only the
   "探索经验" list.
 - Output must be a single valid JSON object, nothing else.
+"""
+
+
+# terminal ====================================================================
+
+TERMINAL_CHECKER_PROMPT = """\
+You are a security system that checks shell commands for safety.
+Only allow commands that are necessary for the agent to accomplish its task,
+and do not allow any commands that could be harmful or unnecessary.
+If a command is potentially harmful or unnecessary, reject it and provide a
+clear explanation of why it was rejected.
+Please follow these interception rules:
+  - Reject destructive operations on the host (rm -rf /, mkfs, dd to devices).
+  - Reject privilege escalation (sudo, su) and credential exfiltration.
+  - Reject opening reverse shells or exposing internal services to the public.
+  - Reject anything that obviously falls outside the user's stated task.
+"""
+
+
+TERMINAL_SUMMARY_PROMPT = """\
+You are an Output Compressor for shell command results. The user gives you
+the original command and its raw output. The output is too long to keep in
+the agent context, so you must produce ONE TerminalSummary JSON object that
+preserves what matters and summarizes the rest.
+
+Return a single JSON object matching the TerminalSummary schema. No prose,
+no markdown fences, no extra keys.
+
+────────────────────────────────────────
+Field guidance
+────────────────────────────────────────
+- errors:        Verbatim copy of every error / traceback / non-zero exit
+                 message that appears in the output. Each list item is one
+                 error block, copied character-for-character (preserve line
+                 breaks, file paths, line numbers). Do NOT paraphrase. Empty
+                 list if there are truly no errors.
+- highlights:    Verbatim copy of other load-bearing lines a downstream agent
+                 must see exactly: file paths created/modified, URLs, version
+                 strings, test pass/fail counters, prompts awaiting input,
+                 final result lines. Copy character-for-character. Deduplicate
+                 obviously repeated lines.
+- summary:       Lossy natural-language summary of the remaining noise
+                 (progress bars, repeated logs, boilerplate, install chatter).
+                 3–8 sentences. Neutral tone, no first person. Do not repeat
+                 anything already placed in `errors` or `highlights`.
+
+────────────────────────────────────────
+Discipline
+────────────────────────────────────────
+- Never invent content that is not in the original output.
+- Preserve ordering inside each list when ordering carries meaning
+  (e.g. stack frames, diff hunks, sequential build steps).
+- Strip ANSI escape sequences from copied text, but keep everything else
+  byte-faithful.
 """

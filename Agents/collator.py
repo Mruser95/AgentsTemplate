@@ -37,7 +37,7 @@ CUR_DB = ROOT / "SessionDB" / "collator.db"
 LOG_DIR = ROOT / "Logs" / "collator"
 
 _cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
-UNSETTLED_THRESHOLD = int(_cfg.get("collator_unsettled_threshold", 30))
+TURN_THRESHOLD = int(_cfg.get("collator_turn_threshold", 100))
 MAX_PARALLEL = int(_cfg.get("collator_max_parallel", 2))
 RETRY_COUNT = int(_cfg.get("collator_retry_count", 1))
 LONG_MEM_K = int(_cfg.get("collator_long_memory_k", 5))
@@ -419,27 +419,109 @@ def _used_tools(messages: list[BaseMessage]) -> set[str]:
     return used
 
 
-# scheduler ==================================================================  
+# routes =====================================================================
+
+
+async def _route_short(tid: str, new: list[BaseMessage], *, offset: int, k: int) -> None:
+    from Agents.remember import short_memory_chain
+    from Memory import shortMem
+
+    entry = await short_memory_chain.ainvoke({"transcript": get_buffer_string(new)})
+    payload: dict[str, Any] = entry.model_dump()
+    # chain 里 turn_range 是相对增量（1-based），外层修正为全局位置
+    tr = payload.get("turn_range") or [1, len(new)]
+    try:
+        ls, le = int(tr[0]), int(tr[1])
+    except (TypeError, ValueError, IndexError):
+        ls, le = 1, len(new)
+    payload["turn_range"] = (offset + ls, offset + le)
+    payload.setdefault("timestamp", datetime.now().isoformat())
+    await shortMem.store(payload, thread_id=tid)
+
+
+async def _route_long(tid: str, new: list[BaseMessage], *, offset: int, k: int) -> None:
+    from Agents.remember import long_memory_chain
+
+    batch = await long_memory_chain.ainvoke({"transcript": get_buffer_string(new)})
+    entries = getattr(batch, "long_memories", None) or []
+    if not entries:
+        return
+    candidates: list[dict] = []
+    for e in entries:
+        d = e.model_dump() if hasattr(e, "model_dump") else dict(e)
+        d.setdefault("timestamp", datetime.now().isoformat())
+        candidates.append(d)
+    await collate_long_memory.ainvoke(
+        {"candidates": candidates, "k": k},
+        config={"configurable": {"thread_id": tid}},
+    )
+
+
+async def _route_skills(tid: str, new: list[BaseMessage], *, offset: int, k: int) -> None:
+    from Tools.skills import index as skill_index
+
+    targets: list[tuple[str, Path]] = []
+    for name in _used_tools(new):
+        p = (skill_index.get(name) or {}).get("path")
+        if p and Path(p).exists():
+            targets.append((name, Path(p)))
+    if not targets:
+        return
+
+    errors: list[BaseException] = []
+    for name, path in targets:
+        rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
+        try:
+            await collate_tool_skill.ainvoke(
+                {"skill_path": str(rel), "tool_name": name, "messages": new},
+                config={"configurable": {"thread_id": tid}},
+            )
+        except BaseException as e:
+            errors.append(e)
+    if errors:
+        raise RuntimeError("skill curation errors: " + "; ".join(repr(e) for e in errors))
+
+
+# (route_name, route_callable) — 顺序无关，scheduler 并发执行
+RouteFn = Callable[..., Awaitable[Any]]
+ROUTES: tuple[tuple[str, RouteFn], ...] = (
+    ("short",  _route_short),
+    ("long",   _route_long),
+    ("skills", _route_skills),
+)
+
+
+# scheduler ==================================================================
 
 
 class CollationScheduler:
+    """
+    每收到 N 次 notify(tid)（默认 N=100，对应 config.collator_turn_threshold）
+    就为该 thread 起一个后台 collation 任务，串行执行所有 ROUTES。
+    """
+
     def __init__(
-        self, *, unsettled_threshold: int = UNSETTLED_THRESHOLD, max_parallel: int = MAX_PARALLEL,
+        self, *, turn_threshold: int = TURN_THRESHOLD, max_parallel: int = MAX_PARALLEL,
         retry_count: int = RETRY_COUNT, long_memory_k: int = LONG_MEM_K,
+        routes: tuple[tuple[str, RouteFn], ...] = ROUTES,
     ) -> None:
-        self.unsettled_threshold = int(unsettled_threshold)
-        self._max_parallel = int(max_parallel)
+        self.turn_threshold = max(int(turn_threshold), 1)
+        self._max_parallel = max(int(max_parallel), 1)
         self._retries = max(int(retry_count), 0)
         self._k = int(long_memory_k)
+        self._routes = routes
         self._sem: Optional[asyncio.Semaphore] = None
-        self._unsettled: dict[str, int] = {}
+        self._counts: dict[str, int] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
-    def notify(self, tid: str, delta: int = 2) -> None:
+    # ---- public ----
+
+    def notify(self, tid: str, delta: int = 1) -> None:
+        """累加该 thread 的轮次计数；达到阈值即起后台整理任务。"""
         try:
-            n = self._unsettled.get(tid, 0) + max(int(delta), 0)
-            self._unsettled[tid] = n
-            if n >= self.unsettled_threshold:
+            n = self._counts.get(tid, 0) + max(int(delta), 0)
+            self._counts[tid] = n
+            if n >= self.turn_threshold:
                 self._kick(tid)
         except Exception:
             self._log(tid, route="notify", ok=False, error=traceback.format_exc())
@@ -448,6 +530,8 @@ class CollationScheduler:
         for t in self._tasks.values():
             if not t.done():
                 t.cancel()
+
+    # ---- internals ----
 
     def _kick(self, tid: str) -> None:
         t = self._tasks.get(tid)
@@ -469,24 +553,21 @@ class CollationScheduler:
                 last = await asyncio.to_thread(_load_cursor, tid)
                 new = msgs[last:]
                 if not new:
-                    self._unsettled[tid] = 0
+                    self._counts[tid] = 0
                     return
-                routes: tuple[tuple[str, Callable[[], Awaitable[Any]]], ...] = (
-                    ("short",  lambda: self._do_short(tid, new, offset=last)),
-                    ("long",   lambda: self._do_long(tid, new)),
-                    ("skills", lambda: self._do_skills(tid, new)),
-                )
-                await asyncio.gather(*(self._run(tid, n, f) for n, f in routes))
+                await asyncio.gather(*(
+                    self._run(tid, name, fn, new, offset=last) for name, fn in self._routes
+                ))
                 await asyncio.to_thread(_save_cursor, tid, len(msgs))
-                self._unsettled[tid] = 0
+                self._counts[tid] = 0
                 self._log(tid, route="collate", ok=True, new_messages=len(new))
             except Exception:
                 self._log(tid, route="collate", ok=False, error=traceback.format_exc())
 
-    async def _run(self, tid: str, name: str, factory: Callable[[], Awaitable[Any]]) -> None:
+    async def _run(self, tid: str, name: str, fn: RouteFn, new: list[BaseMessage], *, offset: int) -> None:
         for attempt in range(1, self._retries + 2):
             try:
-                await factory()
+                await fn(tid, new, offset=offset, k=self._k)
             except BaseException:
                 final = attempt > self._retries
                 self._log(tid, route=name, ok=False, error=traceback.format_exc(),
@@ -496,65 +577,6 @@ class CollationScheduler:
                 continue
             self._log(tid, route=name, ok=True, attempt=attempt)
             return
-
-    # ---- routes ----
-
-    async def _do_short(self, tid: str, new: list[BaseMessage], *, offset: int) -> None:
-        from Agents.remember import short_memory_chain
-        from Memory import shortMem
-
-        entry = await short_memory_chain.ainvoke({"transcript": get_buffer_string(new)})
-        payload: dict[str, Any] = entry.model_dump()
-        # chain 里 turn_range 是相对增量（1-based），外层修正为全局位置
-        tr = payload.get("turn_range") or [1, len(new)]
-        try:
-            ls, le = int(tr[0]), int(tr[1])
-        except (TypeError, ValueError, IndexError):
-            ls, le = 1, len(new)
-        payload["turn_range"] = (offset + ls, offset + le)
-        payload.setdefault("timestamp", datetime.now().isoformat())
-        await shortMem.store(payload, thread_id=tid)
-
-    async def _do_long(self, tid: str, new: list[BaseMessage]) -> None:
-        from Agents.remember import long_memory_chain
-
-        batch = await long_memory_chain.ainvoke({"transcript": get_buffer_string(new)})
-        entries = getattr(batch, "long_memories", None) or []
-        if not entries:
-            return
-        candidates: list[dict] = []
-        for e in entries:
-            d = e.model_dump() if hasattr(e, "model_dump") else dict(e)
-            d.setdefault("timestamp", datetime.now().isoformat())
-            candidates.append(d)
-        await collate_long_memory.ainvoke(
-            {"candidates": candidates, "k": self._k},
-            config={"configurable": {"thread_id": tid}},
-        )
-
-    async def _do_skills(self, tid: str, new: list[BaseMessage]) -> None:
-        from Tools.skills import index as skill_index
-
-        targets: list[tuple[str, Path]] = []
-        for name in _used_tools(new):
-            p = (skill_index.get(name) or {}).get("path")
-            if p and Path(p).exists():
-                targets.append((name, Path(p)))
-        if not targets:
-            return
-
-        errors: list[BaseException] = []
-        for name, path in targets:
-            rel = path.relative_to(ROOT) if path.is_relative_to(ROOT) else path
-            try:
-                await collate_tool_skill.ainvoke(
-                    {"skill_path": str(rel), "tool_name": name, "messages": new},
-                    config={"configurable": {"thread_id": tid}},
-                )
-            except BaseException as e:
-                errors.append(e)
-        if errors:
-            raise RuntimeError("skill curation errors: " + "; ".join(repr(e) for e in errors))
 
     @staticmethod
     def _log(tid: str, *, route: str, ok: bool, error: Optional[str] = None, **extra: Any) -> None:

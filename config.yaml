@@ -11,13 +11,25 @@ shell_permissions:
 shell_count_limit: 50
 shell_default_timeout: 120        # 默认 subprocess 超时（秒）；旧值 30s 会让联网/编译类命令被错杀
 shell_max_timeout: 600            # agent 通过 timeout 入参可申请的上限（秒）
-shell_checker_prompt: |
-  You are a security system that checks shell commands for safety. 
-  Only allow commands that are necessary for the agent to accomplish its task, and do not allow any commands that could be harmful or unnecessary.
-  If a command is potentially harmful or unnecessary, reject it and provide a clear explanation of why it was rejected.
-  Please follow these interception rules:
-    - ...
-    
+shell_output_max_length: 8000     # 命令输出超过该字符数会触发 LLM 总结（schema 输出）；<=0 关闭总结
+
+
+# >> Edit Tool Configuration
+edit_count_limit: 50              # 单个 thread 内 edit 工具的最大调用次数
+
+
+# >> Overview Tools (repo_map / grep / glob) Configuration
+repo_map_count_limit: 20          # repo_map 单 thread 调用上限
+repo_map_top_n: 20                # 默认按 PageRank 展开签名的文件数
+repo_map_max_symbols: 25          # 单文件最多列出的类/函数签名数
+
+grep_count_limit: 30              # grep 单 thread 调用上限
+grep_max_results: 80              # 默认返回最大命中行数
+grep_max_per_file: 10             # 单文件最多返回命中行数
+
+glob_count_limit: 30              # glob 单 thread 调用上限
+glob_max_results: 200             # 默认返回最大文件数
+
 
 # >> Browser Tool Configuration 
 browser_count_limit: 15
@@ -44,6 +56,7 @@ dispatch_count_limit: 10
 
 # >> Coder Agent Configuration
 coder_run_call_limit: 50         # max LLM calls per single coder.invoke run
+coder_subtask_run_limit: 40      # 子代理（dispatch_coder 派发的一次性子任务）的强制 step 上限：超过后中间件会优雅退出，coder 必须直接产出 CoderReport 总结
 coder_thread_call_limit: 1000     # max LLM calls across the whole thread (multi-turn)
 coder_exit_behavior: end         # "end" -> graceful stop; "error" -> raise
 coder_lint_max_retries: 3        # max "lint fail -> feedback -> re-invoke" rounds (0 disables retry, status forced BLOCKED on first fail)
@@ -69,7 +82,7 @@ manager_recursion_limit: 100     # max LangGraph steps per single manager run; i
 
 
 # >> Collator Scheduler Configuration
-collator_unsettled_threshold: 15   # 累计未整理消息数 >= 阈值就起一个后台任务跑整理
+collator_turn_threshold: 100       # 每 N 轮（notify 累计计数）触发一次整理（含 short_mem 压缩 / long_mem 整理 / skill 经验沉淀）
 collator_max_parallel: 2           # 同时在跑的 collator 任务上限（跨 thread 共享信号量）
 collator_retry_count: 1            # 单个 route 失败时的重试次数（总尝试数 = retry_count + 1）
 collator_long_memory_k: 5          # 长期记忆整理时每条候选召回的最近邻数

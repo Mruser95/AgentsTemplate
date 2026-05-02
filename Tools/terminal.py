@@ -1,5 +1,4 @@
 import re
-import os
 import sys
 import subprocess
 import locale
@@ -9,8 +8,6 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr
 from langchain_core.tools import BaseTool
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -19,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 load_dotenv(PROJECT_ROOT / '.env')
 
 from Tools.utils import bump_budget, current_thread_id, ensure_workspace, workspace_env  # noqa: E402
+from Tools.terminal_agent import checker_agent, summarizer_agent  # noqa: E402
 
 with open(PROJECT_ROOT / 'config.yaml', 'r', encoding='utf-8') as file:
     config = yaml.safe_load(file)
@@ -26,7 +24,6 @@ with open(PROJECT_ROOT / 'config.yaml', 'r', encoding='utf-8') as file:
 shell_restriction: bool = config['shell_restriction']
 shell_permissions: list[str] = [var.strip() for cmds in config['shell_permissions'].values() for var in cmds]
 shell_count_limit: int = config['shell_count_limit']
-checker_prompt: str = config['shell_checker_prompt']
 shell_default_timeout: int = int(config.get('shell_default_timeout', 120))
 shell_max_timeout: int = int(config.get('shell_max_timeout', 600))
 
@@ -41,10 +38,6 @@ class SafeShellInput(BaseModel):
             "pip install, network downloads, or long-running tests."
         ),
     )
-
-class CheckerOutput(BaseModel):
-    allowed: bool = Field(description="Whether the command is allowed to execute")
-    reason: str = Field(description="If not allowed, the reason why")
 
 
 def parse_commands(command: str) -> list[str]:
@@ -75,22 +68,6 @@ def check_command(command: str) -> tuple[bool, list[str]]:
     return len(denied) == 0, denied
 
 
-_llm: ChatOpenAI | None = None
-
-
-def _get_checker_llm() -> ChatOpenAI:
-    # 懒加载：避免 import 时构建 httpx client（SOCKS 代理无 socksio 会 ImportError）
-    global _llm
-    if _llm is None:
-        _llm = ChatOpenAI(
-            model=os.getenv("small_llm_model"),
-            api_key=os.getenv("small_llm_key"),
-            base_url=os.getenv("small_llm_base_url"),
-            streaming=False,
-        )
-    return _llm
-
-
 def _decode(data: bytes) -> str:
     # Windows 中文系统 cmd.exe 输出是 GBK/CP936，先试 UTF-8 再回落本地编码
     if not data:
@@ -101,12 +78,7 @@ def _decode(data: bytes) -> str:
         return data.decode(locale.getpreferredencoding(False), errors="replace")
 
 
-def _run_subprocess(
-    command: str,
-    timeout: int | None = None,
-    cwd: str | None = None,
-    env: dict | None = None,
-) -> str:
+def _run_subprocess(command: str, timeout: int | None = None, cwd: str | None = None, env: dict | None = None) -> str:
     timeout = min(int(timeout), shell_max_timeout) if timeout and timeout > 0 else shell_default_timeout
     try:
         proc = subprocess.run(
@@ -129,41 +101,29 @@ def _run_subprocess(
     return stdout + (f"\n{stderr}" if stderr.strip() else "")
 
 
-def _execute(
-    command: str,
-    timeout: int | None = None,
-    cwd: str | None = None,
-    env: dict | None = None,
-) -> str:
+def _execute(command: str, timeout: int | None = None,cwd: str | None = None,env: dict | None = None) -> str:
     allowed, denied = check_command(command)
     if not allowed:
         return f"Command denied, contains unauthorized commands: {', '.join(denied)}"
     # 仅在开启 shell_restriction 时跑 LLM 二次审查；关闭时白名单已是兜底，跳过可省每条 3-8s 延迟
     if shell_restriction:
-        response = _get_checker_llm().with_structured_output(CheckerOutput).invoke(
-            [SystemMessage(content=checker_prompt), HumanMessage(content=command)]
-        )
+        response = checker_agent.check(command)
         if not response.allowed:
             return f"Command denied by checker agent: {response.reason}"
-    return _run_subprocess(command, timeout, cwd=cwd, env=env)
+    output = _run_subprocess(command, timeout, cwd=cwd, env=env)
+    return summarizer_agent.summarize(command, output)
 
 
-async def _execute_async(
-    command: str,
-    timeout: int | None = None,
-    cwd: str | None = None,
-    env: dict | None = None,
-) -> str:
+async def _execute_async(command: str, timeout: int | None = None, cwd: str | None = None, env: dict | None = None) -> str:
     allowed, denied = check_command(command)
     if not allowed:
         return f"Command denied, contains unauthorized commands: {', '.join(denied)}"
     if shell_restriction:
-        response = await _get_checker_llm().with_structured_output(CheckerOutput).ainvoke(
-            [SystemMessage(content=checker_prompt), HumanMessage(content=command)]
-        )
+        response = await checker_agent.acheck(command)
         if not response.allowed:
             return f"Command denied by checker agent: {response.reason}"
-    return await asyncio.to_thread(_run_subprocess, command, timeout, cwd, env)
+    output = await asyncio.to_thread(_run_subprocess, command, timeout, cwd, env)
+    return await summarizer_agent.asummarize(command, output)
 
 
 class SafeShell(BaseTool):

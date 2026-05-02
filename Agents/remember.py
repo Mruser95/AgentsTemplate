@@ -33,9 +33,30 @@ class ShortMemoryEntry(BaseModel):
     turn_range: tuple[int, int] = Field(
         description="The range of conversation turns covered by this summary, e.g., (1, 20)"
     )
+    key_issues: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Key problems / questions / blockers encountered during the conversation. "
+            "One short sentence per item, factual, no speculation."
+        ),
+    )
     key_decisions: list[str] = Field(
         default_factory=list,
         description="Key decisions or conclusions made during the conversation"
+    )
+    key_errors: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Concrete errors / failures observed (exception messages, failed tool calls, "
+            "wrong outputs, etc.). Include identifying details when available."
+        ),
+    )
+    resolutions: list[str] = Field(
+        default_factory=list,
+        description=(
+            "How the issues / errors above were resolved or worked around. "
+            "Each item should be self-contained and reference the matching issue/error when useful."
+        ),
     )
     open_tasks: list[str] = Field(
         default_factory=list,

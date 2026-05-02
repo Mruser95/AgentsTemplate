@@ -26,6 +26,7 @@ from Agents.coder import (  # noqa: E402
     ainvoke_with_lint_gate,
     astream_collect_final_state,
     build_coder_agent,
+    coder_subtask_run_limit,
     invoke_with_lint_gate,
     on_event_var,
 )
@@ -238,14 +239,18 @@ class DispatchCoder(BaseTool):
 
     def _dispatch(self, task_name: str, task_prompt: str, context: str) -> str:
         task_block = _format_task_specific_prompt(task_name, task_prompt, context)
-        child_agent = build_coder_agent(task_specific_prompt=task_block)
+        child_agent = build_coder_agent(
+            task_specific_prompt=task_block, run_limit=coder_subtask_run_limit,
+        )
         report = invoke_with_lint_gate(child_agent, _format_child_initial(task_name))
         return _coder_report_to_json(report)
 
     async def _adispatch(self, task_name: str, task_prompt: str, context: str) -> str:
         task_block = _format_task_specific_prompt(task_name, task_prompt, context)
         child_agent = await asyncio.to_thread(
-            build_coder_agent, task_specific_prompt=task_block,
+            build_coder_agent,
+            task_specific_prompt=task_block,
+            run_limit=coder_subtask_run_limit,
         )
         on_event = on_event_var.get()
         report = await ainvoke_with_lint_gate(
