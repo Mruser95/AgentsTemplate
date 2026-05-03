@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Awaitable, Callable, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Tuple
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
 from langchain.agents import create_agent
@@ -19,14 +19,13 @@ from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
-from Tools.browser import Browser  # noqa: E402
+from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
 from Tools.plan import Plan  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
-from Tools.utils import workspace_info  # noqa: E402
+from Tools.utils import is_summary_message, workspace_info  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
 from Agents.tester import dispatch_tester  # noqa: E402
-from Agents.remember import short_memory, long_memory  # noqa: E402
 from agents_prompt import manager_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -57,16 +56,16 @@ llm = ChatOpenAI(
 _MANAGER_TOOLS = [
     SkillLibrary(),
     SafeShell(),
+    RepoMap(),
+    Grep(),
+    Glob(),
     TavilySearch(),
-    Browser(),
     Schedule(),
     Plan(),
     Todo(read_only=True),
     retrieve,
     dispatch_tasker_coder,
     dispatch_tester,
-    short_memory,
-    long_memory,
 ]
 
 _MANAGER_MIDDLEWARE = [
@@ -105,8 +104,8 @@ async def open_manager_agent(thread_id: str | None = None) -> AsyncIterator[Any]
 @dataclass
 class ManagerSession:
     thread_id: str
-    ainvoke: Callable[[str], Awaitable[dict]]
-    agent: Any
+    ainvoke: Callable[..., Awaitable[dict]]
+    astream: Callable[..., AsyncIterator[Tuple[str, Any]]]
 
 
 @asynccontextmanager
@@ -120,21 +119,67 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
             "recursion_limit": manager_recursion_limit,
         }
 
-        async def _ainvoke(message: str, *, extra_config: Optional[dict] = None) -> dict:
+        def _merged_config(extra_config: Optional[dict] = None) -> dict:
             merged_config = dict(config)
             if extra_config:
                 merged_cfg = dict(merged_config.get("configurable") or {})
                 merged_cfg.update(extra_config.get("configurable") or {})
                 merged_config["configurable"] = merged_cfg
+            return merged_config
+
+        def _count_active_messages(messages: list) -> int:
+            return sum(1 for m in messages if not is_summary_message(m))
+
+        async def _state_active_count(merged_config: dict) -> int:
+            snap = await agent.aget_state(merged_config)
+            return _count_active_messages((snap.values or {}).get("messages") or [])
+
+        def _notify_delta(merged_config: dict, before: int, after: int) -> None:
+            delta = max(after - before, 0)
+            if not delta:
+                return
+            notify_tid = str((merged_config.get("configurable") or {}).get("thread_id") or thread_id)
+            try:
+                from schedule import scheduler
+                scheduler.notify(notify_tid, delta=delta)
+            except Exception:
+                pass
+
+        async def _ainvoke(message: str, *, extra_config: Optional[dict] = None) -> dict:
+            merged_config = _merged_config(extra_config)
+            before = await _state_active_count(merged_config)
             result = await agent.ainvoke(
                 {"messages": [HumanMessage(content=message)]},
                 config=merged_config,
             )
-            try:
-                from Agents.collator import scheduler
-                scheduler.notify(thread_id)
-            except Exception:
-                pass
+            after = _count_active_messages(result.get("messages") or [])
+            _notify_delta(merged_config, before, after)
             return result
 
-        yield ManagerSession(thread_id=thread_id, ainvoke=_ainvoke, agent=agent)
+        async def _astream(message: str, *, extra_config: Optional[dict] = None) -> AsyncIterator[Tuple[str, Any]]:
+            """流式产出归一化事件 (name, payload)：token / tool_start / tool_end。"""
+            merged_config = _merged_config(extra_config)
+            before = await _state_active_count(merged_config)
+            try:
+                async for event in agent.astream_events(
+                    {"messages": [HumanMessage(content=message)]},
+                    config=merged_config,
+                    version="v2",
+                ):
+                    name, data = event.get("event"), event.get("data") or {}
+                    if name == "on_chat_model_stream":
+                        text = getattr(data.get("chunk"), "content", "")
+                        if isinstance(text, str) and text:
+                            yield "token", text
+                    elif name == "on_tool_start":
+                        yield "tool_start", {"name": event.get("name"), "args": data.get("input")}
+                    elif name == "on_tool_end":
+                        yield "tool_end", {"name": event.get("name"), "output": str(data.get("output"))}
+            finally:
+                try:
+                    after = await _state_active_count(merged_config)
+                    _notify_delta(merged_config, before, after)
+                except Exception:
+                    pass
+
+        yield ManagerSession(thread_id=thread_id, ainvoke=_ainvoke, astream=_astream)

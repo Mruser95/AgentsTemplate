@@ -9,15 +9,13 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-from Agents.manager import manager_recursion_limit, manager_session  # noqa: E402
-from Agents.collator import read_ckpt_msgs, scheduler  # noqa: E402
-from Tools.utils import ensure_workspace, is_inside  # noqa: E402
+from Agents.manager import manager_session  # noqa: E402
+from Tools.utils import ensure_workspace, is_inside, read_ckpt_msgs  # noqa: E402
 
 API_KEY = os.getenv("API_KEY")
 
@@ -35,7 +33,7 @@ class ChatBody(BaseModel):
 
 
 def _sse(event: str, data) -> str:
-    payload = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False, default=str)
+    payload = json.dumps(data, ensure_ascii=False, default=str)
     return f"event: {event}\ndata: {payload}\n\n"
 
 
@@ -114,24 +112,8 @@ async def chat(thread_id: str, body: ChatBody) -> StreamingResponse:
     async def gen() -> AsyncIterator[str]:
         try:
             async with manager_session(thread_id) as sess:
-                async for ev in sess.agent.astream_events(
-                    {"messages": [HumanMessage(content=body.message)]},
-                    config={
-                        "configurable": {"thread_id": thread_id},
-                        "recursion_limit": manager_recursion_limit,
-                    },
-                    version="v2",
-                ):
-                    name, data = ev.get("event"), ev.get("data") or {}
-                    if name == "on_chat_model_stream":
-                        text = getattr(data.get("chunk"), "content", "")
-                        if isinstance(text, str) and text:
-                            yield _sse("token", json.dumps(text, ensure_ascii=False))
-                    elif name == "on_tool_start":
-                        yield _sse("tool_start", {"name": ev.get("name"), "args": data.get("input")})
-                    elif name == "on_tool_end":
-                        yield _sse("tool_end", {"name": ev.get("name"), "output": str(data.get("output"))})
-            scheduler.notify(thread_id)
+                async for name, payload in sess.astream(body.message):
+                    yield _sse(name, payload)
             yield _sse("done", "[DONE]")
         except Exception as e:
             yield _sse("error", {"error": str(e)})

@@ -130,14 +130,14 @@ Discipline
 """
 
 
-# collator ====================================================================
+# curator (collation scheduler) ===============================================
 
 
 LONG_CURATOR_PROMPT = """\
 You are a Long-Memory Curator for a sqlite vector store.
 
 You receive:
-  - candidates: a JSON list of LongMemoryCandidate items just extracted from a
+  - candidates: a JSON list of LongMemoryEntry items just extracted from a
     fresh transcript and not yet stored.
   - existing:   a JSON list of LongMemoryRecord items already in the DB that
     were retrieved as the top semantic neighbours of those candidates.

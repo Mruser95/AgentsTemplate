@@ -153,11 +153,6 @@ new_status=done
 
 ## 探索经验
 ```
-1. 应该避免做"用 terminal 直接 cat / echo > plan.json"，否则会绕过工具的状态校验、
-   updated_at 自动维护、以及 checker hard gate；应该所有 plan 读写都走 plan。
-2. 应该避免做"update_subtask_status='done' 后立即调 update_subtask_status 把另一条
-   subtask 也置 done"，否则会让 hard gate 的 CheckerReport 还没读就被新报告覆盖；
-   应该一次只 done 一个 subtask、读完报告并按建议处理后再处理下一个。
-3. 应该避免做"在 plan.status='drafting' 时就开始派发 subagent 干活"，否则会做一堆
-   plan 还没定型的工作；应该先 set_plan_status='ready' 并向用户确认 plan 后再开工。
+1. 应该避免做..., 否则会导致..., 应该做...
+2. ...
 ```

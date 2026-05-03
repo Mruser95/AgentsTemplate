@@ -149,14 +149,6 @@ name=daily-disk-check
 
 ## 探索经验
 ```
-1. 把 intent 写成"跑每日任务"这种无信息词 → 到点的 manager 完全不知道该做什么；
-   应把"做什么 / 成功标准"写进 intent。
-2. context 是"当时会话的镜像"，而不是"系统文档"——把用户刚才反复提到的前提、
-   manager 当下准备好的方案、此刻不得违反的约束写进去；否则到点只剩 intent，
-   manager 要重新推一遍来龙去脉。
-3. creator 不确定 → 老实填 "unknown"，别为了"看着正规"硬选 user/agent。
-4. 避免 name 用空格/中文之外的特殊符号（"、/、|、&），会破坏命令拼接。
-5. 不要创建完就忘 —— 下次对话时 list 一下，必要时 history 看看上一次跑成什么样。
-6. manager 是唯一能用这个工具的 agent。在其他 agent（coder / checker / …）
-   的 system prompt 或工具清单里不要出现 schedule，避免越权。
+1. 应该避免做..., 否则会导致..., 应该做...
+2. ...
 ```

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import venv
-from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -95,3 +94,48 @@ def bump_budget(counts: dict[str, int], thread_id: str, limit: int) -> tuple[boo
     n = cur + 1
     counts[thread_id] = n
     return True, n, limit - n
+
+
+# Checkpoint 读取 ========================================================
+CHECKPOINT_DB = PROJECT_ROOT / "SessionDB" / "checkpoints.db"
+
+
+async def read_ckpt_msgs(thread_id: str) -> list:
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    CHECKPOINT_DB.parent.mkdir(parents=True, exist_ok=True)
+    async with AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB)) as saver:
+        tup = await saver.aget_tuple({"configurable": {"thread_id": thread_id}})
+    msgs = (getattr(tup, "checkpoint", None) or {}).get("channel_values", {}).get("messages") if tup else None
+    return list(msgs) if isinstance(msgs, list) else []
+
+
+# Short-memory 压缩摘要标记 ===========================================
+SUMMARY_MARKER = "[compressed earlier conversation]"
+
+
+def is_summary_message(msg: Any) -> bool:
+    """判断一条消息是否是 short_mem 压缩生成的摘要 SystemMessage。"""
+    from langchain_core.messages import SystemMessage  # 局部导入避免顶层重复
+    if not isinstance(msg, SystemMessage):
+        return False
+    content = getattr(msg, "content", None)
+    return isinstance(content, str) and content.startswith(SUMMARY_MARKER)
+
+
+async def compress_ckpt_messages(thread_id: str, removed_ids: list[str], summary_text: str) -> None:
+    ids = [i for i in (removed_ids or []) if i]
+    if not ids or not summary_text:
+        return
+    from langchain_core.messages import RemoveMessage, SystemMessage
+    from Agents.manager import open_manager_agent  # 局部导入避免循环
+
+    async with open_manager_agent(thread_id=thread_id) as agent:
+        ops: list = [RemoveMessage(id=i) for i in ids]
+        ops.append(SystemMessage(content=f"{SUMMARY_MARKER}\n{summary_text}"))
+        await agent.aupdate_state(
+            {"configurable": {"thread_id": thread_id}},
+            {"messages": ops},
+        )
+
+

@@ -78,14 +78,14 @@ checker_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
 manager_run_call_limit: 80       # max LLM calls per single manager.invoke run (executing 阶段会循环派发，预算要够)
 manager_thread_call_limit: 500   # max LLM calls across the whole thread (跨多轮对话累计上限)
 manager_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
-manager_recursion_limit: 100     # max LangGraph steps per single manager run; includes model/tool loop steps
+manager_recursion_limit: 200     # max LangGraph steps per single manager run; includes model/tool loop steps
 
 
-# >> Collator Scheduler Configuration
-collator_turn_threshold: 100       # 每 N 轮（notify 累计计数）触发一次整理（含 short_mem 压缩 / long_mem 整理 / skill 经验沉淀）
-collator_max_parallel: 2           # 同时在跑的 collator 任务上限（跨 thread 共享信号量）
-collator_retry_count: 1            # 单个 route 失败时的重试次数（总尝试数 = retry_count + 1）
-collator_long_memory_k: 5          # 长期记忆整理时每条候选召回的最近邻数
+# >> Collation Scheduler Configuration
+collation_turn_threshold: 10        # notify 累计满 2N 轮才触发一次整理：short_mem 自读 checkpoint，对所有未摘要消息压缩较旧一半（新一半留待下轮自然变"较旧"再压）；long_mem / skill 用 cursor=len(post_msgs) 做增量去重，按整段新增处理
+collation_max_parallel: 2           # 同时在跑的 collation 任务上限（跨 thread 共享信号量）
+collation_retry_count: 1            # 单个 route 失败时的重试次数（总尝试数 = retry_count + 1）
+collation_long_memory_k: 5          # 长期记忆整理时每条候选召回的最近邻数
 
 
 # >> MCP Configuration
