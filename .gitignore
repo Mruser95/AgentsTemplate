@@ -7,4 +7,5 @@ SessionDB/
 Logs/
 .env
 .vscode/
+SkillTree/*/
 .DS_Store

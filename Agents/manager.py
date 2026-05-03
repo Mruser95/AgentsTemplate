@@ -80,6 +80,13 @@ def _build_manager_agent(checkpointer: Any = None, thread_id: str | None = None)
     sp = manager_prompt
     if thread_id:
         sp = sp + "\n\n---\n\n" + workspace_info(thread_id)
+    try:
+        from Memory.proj_agent import read_notes
+        notes = read_notes()
+    except Exception:
+        notes = ""
+    if notes:
+        sp = sp + "\n\n---\n\n## 项目进展记忆（projectKnow）\n" + notes
     return create_agent(
         model=llm,
         tools=_MANAGER_TOOLS,
@@ -147,19 +154,29 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
 
         async def _ainvoke(message: str, *, extra_config: Optional[dict] = None) -> dict:
             merged_config = _merged_config(extra_config)
-            before = await _state_active_count(merged_config)
-            result = await agent.ainvoke(
+            last = await _state_active_count(merged_config)
+            result: dict = {}
+            async for event in agent.astream_events(
                 {"messages": [HumanMessage(content=message)]},
                 config=merged_config,
-            )
-            after = _count_active_messages(result.get("messages") or [])
-            _notify_delta(merged_config, before, after)
+                version="v2",
+            ):
+                if event.get("event") == "on_tool_end":
+                    cur = await _state_active_count(merged_config)
+                    _notify_delta(merged_config, last, cur)
+                    last = cur
+                elif event.get("event") == "on_chain_end" and event.get("name") == "LangGraph":
+                    out = (event.get("data") or {}).get("output")
+                    if isinstance(out, dict):
+                        result = out
+            cur = await _state_active_count(merged_config)
+            _notify_delta(merged_config, last, cur)
             return result
 
         async def _astream(message: str, *, extra_config: Optional[dict] = None) -> AsyncIterator[Tuple[str, Any]]:
             """流式产出归一化事件 (name, payload)：token / tool_start / tool_end。"""
             merged_config = _merged_config(extra_config)
-            before = await _state_active_count(merged_config)
+            last = await _state_active_count(merged_config)
             try:
                 async for event in agent.astream_events(
                     {"messages": [HumanMessage(content=message)]},
@@ -175,10 +192,16 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
                         yield "tool_start", {"name": event.get("name"), "args": data.get("input")}
                     elif name == "on_tool_end":
                         yield "tool_end", {"name": event.get("name"), "output": str(data.get("output"))}
+                        try:
+                            cur = await _state_active_count(merged_config)
+                            _notify_delta(merged_config, last, cur)
+                            last = cur
+                        except Exception:
+                            pass
             finally:
                 try:
-                    after = await _state_active_count(merged_config)
-                    _notify_delta(merged_config, before, after)
+                    cur = await _state_active_count(merged_config)
+                    _notify_delta(merged_config, last, cur)
                 except Exception:
                     pass
 

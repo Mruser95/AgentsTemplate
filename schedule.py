@@ -34,9 +34,11 @@ CREATE TABLE IF NOT EXISTS collation_cursor (
 """
 
 DEFAULT_ROUTES: tuple[tuple[str, str], ...] = (
-    ("short",  "Memory.mem_agent:route_short"),
-    ("long",   "Memory.mem_agent:route_long"),
-    ("skills", "SkillTree.skill_agent:route_skills"),
+    ("short",      "Memory.mem_agent:route_short"),
+    ("long",       "Memory.mem_agent:route_long"),
+    ("skills",     "SkillTree.skill_agent:route_skills"),
+    ("project",    "Memory.proj_agent:route_project"),
+    ("skill_tree", "SkillTree.skill_agent:route_skill_tree"),
 )
 
 RouteFn = Callable[..., Awaitable[Any]]
@@ -97,7 +99,7 @@ class CollationScheduler:
         try:
             n = self._counts.get(tid, 0) + max(int(delta), 0)
             self._counts[tid] = n
-            if n >= self.turn_threshold * 2:
+            if n >= self.turn_threshold:
                 self._kick(tid)
         except Exception:
             self._log(tid, route="notify", ok=False, error=traceback.format_exc())

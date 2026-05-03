@@ -82,7 +82,7 @@ manager_recursion_limit: 200     # max LangGraph steps per single manager run; i
 
 
 # >> Collation Scheduler Configuration
-collation_turn_threshold: 10        # notify 累计满 2N 轮才触发一次整理：short_mem 自读 checkpoint，对所有未摘要消息压缩较旧一半（新一半留待下轮自然变"较旧"再压）；long_mem / skill 用 cursor=len(post_msgs) 做增量去重，按整段新增处理
+collation_turn_threshold: 20        # notify 累计满 N 轮即触发一次整理（不再 *2）：short_mem 自读 checkpoint，对所有未摘要消息压缩较旧一半（新一半留待下轮自然变"较旧"再压）；long_mem / skill 用 cursor=len(post_msgs) 做增量去重，按整段新增处理
 collation_max_parallel: 2           # 同时在跑的 collation 任务上限（跨 thread 共享信号量）
 collation_retry_count: 1            # 单个 route 失败时的重试次数（总尝试数 = retry_count + 1）
 collation_long_memory_k: 5          # 长期记忆整理时每条候选召回的最近邻数
