@@ -22,28 +22,11 @@ from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.utils import current_thread_id, ensure_workspace  # noqa: E402
-from agents_prompt import tester_prompt  # noqa: E402
+from agents_prompt import tester_prompt, runner_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
-
-with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
-    _config = yaml.safe_load(f) or {}
-
-tester_run_call_limit: int = _config.get("tester_run_call_limit", 30)
-tester_thread_call_limit: int = _config.get("tester_thread_call_limit", 100)
-tester_exit_behavior: str = _config.get("tester_exit_behavior", "end")
-
+_CFG = yaml.safe_load((PROJECT_ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
 DATASET_FILENAME = "TestDatasets.json"
-FALLBACK_OUTPUT_PATH = PROJECT_ROOT / "Logs" / DATASET_FILENAME
-
-
-def _resolve_output_path() -> Path:
-    """优先把数据集写到当前 thread 的 workspace；没有 thread 上下文时回退 Logs/。"""
-    tid = current_thread_id()
-    if tid:
-        return ensure_workspace(tid) / DATASET_FILENAME
-    return FALLBACK_OUTPUT_PATH
-
 
 llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
@@ -52,241 +35,272 @@ llm = ChatOpenAI(
 )
 
 
-# TestDataset Schema ==================================================================
+# ===== Schemas (Field.description 是给 LLM 的契约，请勿删) ============================
 
+TestCaseCategory = Literal["happy_path", "edge_case", "boundary", "error_input", "adversarial"]
 
-TestCaseCategory = Literal[
-    "happy_path",
-    "edge_case",
-    "boundary",
-    "error_input",
-    "adversarial",
-]
 
 class TestCase(BaseModel):
     model_config = {"extra": "forbid"}
 
-    name: str = Field(
-        description=(
-            "简短蛇形命名，描述被测行为而非序号，"
-            "例如 'happy_path_perfect_square' / 'error_input_negative'。"
-            "禁止使用 'id' / 'index' 等序号字段（schema 里没有这个字段）。"
-        )
-    )
-    category: TestCaseCategory = Field(
-        description=(
-            "用例分类，五选一："
-            "happy_path（正常通路）/ edge_case（合法但非典型）/ "
-            "boundary（数值或长度边界）/ error_input（非法输入预期报错）/ "
-            "adversarial（对抗性输入）。"
-        )
-    )
-    description: str = Field(
-        description="一句话说这条用例在测什么行为（不是对 input 的重复）。"
-    )
-    input: Any = Field(
-        description=(
-            "任务的输入数据（可以是 str / dict / list 等）。"
-            "字段结构必须与被测任务真实 schema 对齐，不得臆造字段。"
-        )
-    )
-    expected_output: Optional[Any] = Field(
-        default=None,
-        description=(
-            "精确预期输出。若无精确答案必须填 null —— "
-            "和 judgment_criteria 恰有一个非空。"
-        ),
-    )
-    judgment_criteria: str = Field(
-        default="",
-        description=(
-            "没有精确答案时的评判标准；必须是**可机械判断**的条件，"
-            "禁止'差不多 / 看起来对 / 合理'等模糊措辞。"
-            "有精确答案时本字段必须为空字符串。"
-        ),
-    )
+    name: str = Field(description=(
+        "简短蛇形命名，描述被测行为而非序号，例如 'happy_path_perfect_square' / 'error_input_negative'。"
+        "禁止使用 'id' / 'index' 等序号字段（schema 里没有这个字段）。"
+    ))
+    category: TestCaseCategory = Field(description=(
+        "用例分类，五选一：happy_path（正常通路）/ edge_case（合法但非典型）/ "
+        "boundary（数值或长度边界）/ error_input（非法输入预期报错）/ adversarial（对抗性输入）。"
+    ))
+    description: str = Field(description="一句话说这条用例在测什么行为（不是对 input 的重复）。")
+    input: Any = Field(description=(
+        "任务的输入数据（可以是 str / dict / list 等）。"
+        "字段结构必须与被测任务真实 schema 对齐，不得臆造字段。"
+    ))
+    expected_output: Optional[Any] = Field(default=None, description=(
+        "精确预期输出。若无精确答案必须填 null —— 和 judgment_criteria 恰有一个非空。"
+    ))
+    judgment_criteria: str = Field(default="", description=(
+        "没有精确答案时的评判标准；必须是**可机械判断**的条件，"
+        "禁止'差不多 / 看起来对 / 合理'等模糊措辞。有精确答案时本字段必须为空字符串。"
+    ))
 
     @model_validator(mode="after")
-    def _exactly_one_of_expected_or_criteria(self) -> "TestCase":
-        has_expected = self.expected_output is not None
-        has_criteria = bool(self.judgment_criteria.strip())
-        if has_expected and has_criteria:
+    def _xor_expected_criteria(self) -> "TestCase":
+        if (self.expected_output is not None) == bool(self.judgment_criteria.strip()):
             raise ValueError(
-                f"TestCase '{self.name}': expected_output 与 judgment_criteria "
-                "同时给出；必须恰有一个非空（精确答案 vs 判断标准，二选一）。"
-            )
-        if not has_expected and not has_criteria:
-            raise ValueError(
-                f"TestCase '{self.name}': expected_output 与 judgment_criteria "
-                "同时为空；必须恰有一个非空。"
+                f"TestCase '{self.name}': expected_output 与 judgment_criteria 必须恰有一个非空。"
             )
         return self
 
 
 class TestDataset(BaseModel):
     model_config = {"extra": "forbid"}
-
-    task_summary: str = Field(
-        description="一句话复述本数据集为哪个任务生成，便于追溯。"
-    )
-    cases: list[TestCase] = Field(
-        default_factory=list,
-        description=(
-            "本次生成的测试用例列表（落盘时作为 JSON 顶层数组）。"
-            "每个元素必须严格包含 name / category / description / input / "
-            "expected_output / judgment_criteria 六个字段，禁止额外字段（如 id）。"
-        ),
-    )
+    task_summary: str = Field(description="一句话复述本数据集为哪个任务生成，便于追溯。")
+    cases: list[TestCase] = Field(default_factory=list, description=(
+        "本次生成的测试用例列表（落盘时作为 JSON 顶层数组）。每个元素必须严格包含 "
+        "name / category / description / input / expected_output / judgment_criteria 六个字段，禁止额外字段（如 id）。"
+    ))
 
 
-# Tester Agent Factory ================================================================
+FailureKind = Literal[
+    "assertion",            # actual_output 不匹配 expected_output
+    "criteria_unmet",       # 不满足 judgment_criteria
+    "exception",            # 被测代码抛异常 / 进程非零退出
+    "timeout",              # 超时
+    "schema_mismatch",      # 输入/输出形状与被测程序不符
+    "missing_dependency",   # 依赖缺失（包、文件、环境变量）
+    "external_unreachable", # 真实外部资源不可达（网络、站点、API）
+    "skipped",              # 用例不可执行且经判断为合理跳过（仍计 fail，等 manager 决策）
+    "other",
+]
 
 
-_TASK_PROMPT_SEPARATOR = "\n\n---\n\n"
+class TestCaseResult(BaseModel):
+    model_config = {"extra": "forbid"}
+    name: str = Field(description="对应 TestDataset 中的 case.name，必须能在数据集中找到。")
+    category: TestCaseCategory = Field(description="原 case 的分类，原样回填。")
+    passed: bool = Field(description="本条用例是否通过。")
+    actual_output: Optional[Any] = Field(default=None, description=(
+        "被测程序实际输出（数据 / 异常类型 / 退出码摘要）；passed 与否都尽量填，便于 manager 复盘。"
+    ))
+    failure_kind: Optional[FailureKind] = Field(default=None, description=(
+        "failed 时必须给一个 FailureKind 枚举值；passed 时必须为 null。"
+    ))
+    failure_reason: str = Field(default="", description=(
+        "failed 时一句话定位根因（如 '返回 4.5，期望 4.0'、'抛 KeyError ...'）；passed 时必须为空字符串。"
+    ))
+    evidence: str = Field(description=(
+        "可追溯证据：实际命令、关键 stdout / stderr 摘录、退出码、文件路径；务必引用真实片段，禁止编造。"
+    ))
 
-def build_tester_agent(task_specific_prompt: str = ""):
-    system_prompt = (
-        tester_prompt + _TASK_PROMPT_SEPARATOR + task_specific_prompt
-        if task_specific_prompt.strip()
-        else tester_prompt
-    )
-    return create_agent(
-        model=llm,
-        tools=[SkillLibrary(), SafeShell(), TavilySearch()],
-        system_prompt=system_prompt,
-        response_format=TestDataset,
-        middleware=[
-            ModelCallLimitMiddleware(
-                run_limit=tester_run_call_limit,
-                thread_limit=tester_thread_call_limit,
-                exit_behavior=tester_exit_behavior,
-            ),
-        ],
-    )
+    @model_validator(mode="after")
+    def _consistency(self) -> "TestCaseResult":
+        if self.passed and (self.failure_kind is not None or self.failure_reason.strip()):
+            raise ValueError(f"TestCaseResult '{self.name}': passed=True 时 failure_kind/failure_reason 必须为空。")
+        if not self.passed and (self.failure_kind is None or not self.failure_reason.strip()):
+            raise ValueError(f"TestCaseResult '{self.name}': passed=False 必须给 failure_kind 与 failure_reason。")
+        if not self.evidence.strip():
+            raise ValueError(f"TestCaseResult '{self.name}': evidence 不得为空。")
+        return self
 
 
-def _write_dataset_atomic(cases: list[TestCase], output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = [case.model_dump(mode="json") for case in cases]
-    data = json.dumps(payload, ensure_ascii=False, indent=2)
+class TestReport(BaseModel):
+    model_config = {"extra": "forbid"}
+    task_summary: str = Field(description="一句话复述被测任务，便于追溯。")
+    dataset_path: str = Field(description="实际跑的 TestDatasets.json 路径（项目根相对路径优先）。")
+    total: int = Field(ge=0, description="数据集中实际执行的用例总数。")
+    passed: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    overall: Literal["all_pass", "partial_fail", "all_fail"] = Field(description=(
+        "overall 必须由 passed/failed/total 派生：全过=all_pass，全挂=all_fail，否则 partial_fail。"
+    ))
+    results: list[TestCaseResult] = Field(default_factory=list, description="每条用例一项，顺序与数据集一致。")
+    diagnosis: str = Field(default="", description=(
+        "失败模式归纳与给 manager 的下一步建议："
+        "如 '4/5 fail，皆为 schema_mismatch：被测函数签名是 (x: float)，用例传 dict，需修用例'。全过时填 ''。"
+    ))
 
+    @model_validator(mode="after")
+    def _math(self) -> "TestReport":
+        if self.total == 0 or self.total != len(self.results):
+            raise ValueError("TestReport: total 必须 >0 且与 results 长度一致。")
+        p = sum(1 for r in self.results if r.passed)
+        f = self.total - p
+        expected = "all_pass" if f == 0 else "all_fail" if p == 0 else "partial_fail"
+        if (self.passed, self.failed, self.overall) != (p, f, expected):
+            raise ValueError("TestReport: passed/failed/overall 与 results 不一致。")
+        if f and not self.diagnosis.strip():
+            raise ValueError("TestReport: 存在 failed 用例时 diagnosis 不得为空。")
+        return self
+
+
+# ===== 共用辅助 ========================================================================
+
+def _output_path() -> Path:
+    """workspace 下的 TestDatasets.json；无 thread 上下文时回退 Logs/。"""
+    tid = current_thread_id()
+    return (ensure_workspace(tid) / DATASET_FILENAME) if tid else (PROJECT_ROOT / "Logs" / DATASET_FILENAME)
+
+
+def _rel(p: Path) -> str:
+    try:
+        return str(p.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(p)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        suffix=".json",
-        prefix=".testdatasets-",
-        dir=str(output_path.parent),
-        delete=False,
+        mode="w", encoding="utf-8", suffix=".json",
+        prefix=".testdatasets-", dir=str(path.parent), delete=False,
     )
     try:
-        tmp.write(data)
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp.close()
-        os.replace(tmp.name, output_path)
-        # tempfile 默认 0o600，调整为与项目内其他文件一致的 0o644
-        os.chmod(output_path, 0o644)
+        tmp.write(text); tmp.flush(); os.fsync(tmp.fileno()); tmp.close()
+        os.replace(tmp.name, path)
+        os.chmod(path, 0o644)
     except Exception:
-        try:
-            os.unlink(tmp.name)
-        except OSError:
-            pass
+        try: os.unlink(tmp.name)
+        except OSError: pass
         raise
 
 
-_INITIAL_HUMAN = (
+def _build_agent(prompt: str, schema: type[BaseModel], task_prompt: str, prefix: str):
+    sp = f"{prompt}\n\n---\n\n{task_prompt}" if task_prompt.strip() else prompt
+    # tester 与 runner 共用底层 llm，按 prefix 绑定各自 max_tokens（无配置时回退 4096）
+    bound_llm = llm.bind(max_tokens=int(_CFG.get(f"{prefix}_max_tokens", 4096)))
+    return create_agent(
+        model=bound_llm,
+        tools=[SkillLibrary(), SafeShell(), TavilySearch()],
+        system_prompt=sp,
+        response_format=schema,
+        middleware=[ModelCallLimitMiddleware(
+            run_limit=_CFG.get(f"{prefix}_run_call_limit", 30),
+            thread_limit=_CFG.get(f"{prefix}_thread_call_limit", 100),
+            exit_behavior=_CFG.get(f"{prefix}_exit_behavior", "end"),
+        )],
+    )
+
+
+def _structured(state: dict, schema: type[BaseModel], prefix: str) -> BaseModel:
+    out = state.get("structured_response")
+    if not isinstance(out, schema):
+        raise RuntimeError(
+            f"{prefix} agent 未返回合法 {schema.__name__} 结构化响应（got {type(out).__name__}）。"
+        )
+    return out
+
+
+def _make_dispatch(
+    *, name: str, prompt: str, schema: type[BaseModel], prefix: str,
+    human: str, post,  # post: (BaseModel) -> dict   组装 JSON 返回体
+    description: str, input_arg: str = "task_prompt",
+) -> StructuredTool:
+    """生成一对 sync/async 派发函数并打包成 StructuredTool；tester / runner 共用。"""
+
+    def _check(p: str) -> None:
+        if not p.strip():
+            raise ValueError(f"{prefix}: {input_arg} 为空")
+
+    def _sync(**kw) -> str:
+        p = kw[input_arg]; _check(p)
+        state = _build_agent(prompt, schema, p, prefix).invoke(
+            {"messages": [HumanMessage(content=human)]}
+        )
+        return json.dumps(post(_structured(state, schema, prefix)), ensure_ascii=False, indent=2)
+
+    async def _async(**kw) -> str:
+        p = kw[input_arg]; _check(p)
+        state = await _build_agent(prompt, schema, p, prefix).ainvoke(
+            {"messages": [HumanMessage(content=human)]}
+        )
+        # post 里可能含阻塞 IO（如落盘），统一放线程池
+        payload = await asyncio.to_thread(post, _structured(state, schema, prefix))
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    # StructuredTool.from_function 通过函数签名推断参数；动态改名以匹配 input_arg
+    _sync.__name__ = f"_{name}_sync"
+    _async.__name__ = f"_{name}_async"
+    return StructuredTool.from_function(
+        func=lambda **kw: _sync(**kw),
+        coroutine=lambda **kw: _async(**kw),
+        name=name,
+        description=description,
+        args_schema=_make_args_schema(name, input_arg),
+    )
+
+
+def _make_args_schema(tool_name: str, arg_name: str) -> type[BaseModel]:
+    return type(
+        f"{tool_name}_args",
+        (BaseModel,),
+        {"__annotations__": {arg_name: str}, arg_name: Field(...)},
+    )
+
+
+# ===== 派发工具：tester（生成数据集）+ runner（执行并出报告） =======================
+
+_TESTER_HUMAN = (
     "请按 system prompt 中的规范为上面描述的任务生成测试数据集；"
     "完成后以 TestDataset 结构化 schema 输出 JSON（task_summary + cases）。"
 )
-
-
-def _ensure_dataset(dataset: Any) -> TestDataset:
-    if not isinstance(dataset, TestDataset):
-        raise RuntimeError(
-            "tester agent 没有返回合法的 TestDataset 结构化响应："
-            f"got {type(dataset).__name__}。请检查 task_prompt 是否清晰，"
-            "或者调用预算是否被 ModelCallLimitMiddleware 提前截断。"
-        )
-    return dataset
-
-
-def _validate_task_prompt(task_prompt: str) -> None:
-    if not task_prompt.strip():
-        raise ValueError(
-            "task_prompt 为空：无法为空任务生成有意义的测试数据。"
-        )
-
-
-def generate_test_dataset(task_prompt: str, output_path: Optional[Path] = None) -> tuple[list[dict], Path]:
-    _validate_task_prompt(task_prompt)
-    out = output_path or _resolve_output_path()
-    agent = build_tester_agent(task_specific_prompt=task_prompt)
-    state = agent.invoke({"messages": [HumanMessage(content=_INITIAL_HUMAN)]})
-    dataset = _ensure_dataset(state.get("structured_response"))
-    _write_dataset_atomic(dataset.cases, out)
-    return [case.model_dump(mode="json") for case in dataset.cases], out
-
-
-async def agenerate_test_dataset(
-    task_prompt: str, output_path: Optional[Path] = None,
-) -> tuple[list[dict], Path]:
-    _validate_task_prompt(task_prompt)
-    out = output_path or _resolve_output_path()
-    agent = build_tester_agent(task_specific_prompt=task_prompt)
-    state = await agent.ainvoke({"messages": [HumanMessage(content=_INITIAL_HUMAN)]})
-    dataset = _ensure_dataset(state.get("structured_response"))
-    # 原子写入是阻塞 IO；从 async 路径调时放线程池
-    await asyncio.to_thread(_write_dataset_atomic, dataset.cases, out)
-    return [case.model_dump(mode="json") for case in dataset.cases], out
-
-
-tester_agent = build_tester_agent()
-
-
-# Dispatch Tool ========================================================================
-
-
-_DISPATCH_TESTER_DESC = (
-    "派发一个测试数据生成任务给 tester 子代理。"
-    "task_prompt 必须自包含：清晰描述被测任务（输入 schema / 输出 schema / 错误语义 / "
-    "边界条件 / 哪些字段一定不能臆造），子代理只能看到这一段。tester 不实现任务、"
-    "不跑被测代码，只产出一份结构化 TestDataset（task_summary + cases）并落盘到 "
-    "当前会话 workspace 下的 TestDatasets.json（无 thread 上下文时回退 Logs/TestDatasets.json）。"
-    "返回值是一段 JSON：包含 count / output_path / cases。"
-    "适合'先有任务规格、再生成验收数据'的环节；不要在不清楚被测函数 schema 时调用，"
-    "会得到臆造字段的垃圾数据。"
+_TESTER_DESC = (
+    "派发 tester 子代理生成结构化 TestDataset 并落盘到 workspace/TestDatasets.json"
+    "（无 thread 上下文回退 Logs/TestDatasets.json）。"
+    "task_prompt 必须自包含被测任务的输入/输出 schema、错误语义、边界条件；"
+    "tester 不实现任务、不跑被测代码，只产数据。返回 JSON：count / output_path / cases。"
 )
 
 
-def _format_output_path(out: Path) -> str:
-    try:
-        return str(out.relative_to(PROJECT_ROOT))
-    except ValueError:
-        return str(out)
+def _persist_dataset(ds: BaseModel) -> dict:
+    assert isinstance(ds, TestDataset)
+    out = _output_path()
+    cases = [c.model_dump(mode="json") for c in ds.cases]
+    _atomic_write(out, json.dumps(cases, ensure_ascii=False, indent=2))
+    return {"count": len(cases), "output_path": _rel(out), "cases": cases}
 
 
-def _format_dispatch_payload(cases: list[dict], out: Path) -> str:
-    payload = {
-        "count": len(cases),
-        "output_path": _format_output_path(out),
-        "cases": cases,
-    }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+dispatch_tester = _make_dispatch(
+    name="dispatch_tester", prompt=tester_prompt, schema=TestDataset, prefix="tester",
+    human=_TESTER_HUMAN, post=_persist_dataset,
+    description=_TESTER_DESC, input_arg="task_prompt",
+)
 
 
-def _dispatch_tester_sync(task_prompt: str) -> str:
-    cases, out = generate_test_dataset(task_prompt)
-    return _format_dispatch_payload(cases, out)
+_RUNNER_HUMAN = (
+    "请按 system prompt 中的规范读取 TestDatasets.json，逐条执行被测程序，"
+    "记录实际输出与判定，最后以 TestReport 结构化 schema 返回完整报告。"
+)
+_RUNNER_DESC = (
+    "派发 runner 子代理读 TestDatasets.json 跑全量用例，返回 TestReport JSON："
+    "task_summary / dataset_path / total / passed / failed / overall / results[] / diagnosis；"
+    "fail 时 results[i].failure_kind+failure_reason+evidence。"
+    "run_prompt 必须自包含：被测程序入口（脚本/模块/CLI）、调用方式、依赖、TestDatasets.json 路径。"
+    "禁止用本工具修被测代码 / 改测试集——只跑 + 只报。"
+)
 
-
-async def _dispatch_tester_async(task_prompt: str) -> str:
-    cases, out = await agenerate_test_dataset(task_prompt)
-    return _format_dispatch_payload(cases, out)
-
-
-dispatch_tester = StructuredTool.from_function(
-    func=_dispatch_tester_sync,
-    coroutine=_dispatch_tester_async,
-    name="dispatch_tester",
-    description=_DISPATCH_TESTER_DESC,
+dispatch_test_runner = _make_dispatch(
+    name="dispatch_test_runner", prompt=runner_prompt, schema=TestReport, prefix="runner",
+    human=_RUNNER_HUMAN, post=lambda r: r.model_dump(mode="json"),
+    description=_RUNNER_DESC, input_arg="run_prompt",
 )

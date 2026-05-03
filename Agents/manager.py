@@ -25,7 +25,7 @@ from Tools.todo import Todo  # noqa: E402
 from Tools.utils import is_summary_message, workspace_info  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
-from Agents.tester import dispatch_tester  # noqa: E402
+from Agents.tester import dispatch_tester, dispatch_test_runner  # noqa: E402
 from agents_prompt import manager_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -37,6 +37,7 @@ manager_run_call_limit: int = _config.get("manager_run_call_limit", 80)
 manager_thread_call_limit: int = _config.get("manager_thread_call_limit", 500)
 manager_exit_behavior: str = _config.get("manager_exit_behavior", "end")
 manager_recursion_limit: int = int(_config.get("manager_recursion_limit", 100))
+manager_max_tokens: int = int(_config.get("manager_max_tokens", 4096))
 
 
 CHECKPOINT_DB = PROJECT_ROOT / "SessionDB" / "checkpoints.db"
@@ -46,7 +47,8 @@ llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
-    
+    max_tokens=manager_max_tokens,
+    temperature=os.getenv("agent_llm_temperature", 0.7),
 )
 
 
@@ -66,6 +68,7 @@ _MANAGER_TOOLS = [
     retrieve,
     dispatch_tasker_coder,
     dispatch_tester,
+    dispatch_test_runner,
 ]
 
 _MANAGER_MIDDLEWARE = [

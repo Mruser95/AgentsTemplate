@@ -27,7 +27,6 @@ def _scan_skills() -> dict[str, dict]:
 
 
 index = _scan_skills()
-summary = ", ".join(f"{k} — {v['description']}" for k, v in index.items())
 
 
 class Input(BaseModel):
@@ -39,9 +38,11 @@ class Input(BaseModel):
 class SkillLibrary(BaseTool):
     name: str = "skill_library"
     description: str = (
-        f"""Load tool usage skill document. Call this tool before using unfamiliar tools to get usage specifications. 
-            Currently available: {summary}."""
-        if summary else "Load tool usage skill document (no available skills currently)."
+        "Load tool usage skill document. First call with tool_name='list' to see "
+        "available skills and their one-line descriptions; then call with the exact "
+        "tool name right before you actually use that tool to fetch its full doc. "
+        "Do not prefetch docs for tools you are not about to use."
+        if index else "Load tool usage skill document (no available skills currently)."
     )
     args_schema: Type[BaseModel] = Input
     _seen: set[str] = PrivateAttr(default_factory=set)

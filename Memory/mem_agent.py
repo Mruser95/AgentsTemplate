@@ -45,8 +45,10 @@ MemoryType = Literal[
 
 class ShortMemoryEntry(BaseModel):
     summary: str = Field(description="Compressed core content of historical conversations")
-    turn_range: tuple[int, int] = Field(
-        description="The range of conversation turns covered by this summary, e.g., (1, 20)"
+    turn_range: list[int] = Field(
+        min_length=2,
+        max_length=2,
+        description="The range of conversation turns covered by this summary, e.g., [1, 20]"
     )
     key_issues: list[str] = Field(
         default_factory=list,

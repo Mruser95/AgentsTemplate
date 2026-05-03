@@ -37,13 +37,16 @@ coder_run_call_limit: int = _config.get("coder_run_call_limit", 30)
 coder_subtask_run_limit: int = _config.get("coder_subtask_run_limit", 40)
 coder_thread_call_limit: int = _config.get("coder_thread_call_limit", 100)
 coder_exit_behavior: str = _config.get("coder_exit_behavior", "end")
-coder_lint_max_retries: int = _config.get("coder_lint_max_retries", 3)
+coder_lint_max_retries: int = _config.get("coder_lint_max_retries", 2)
+coder_max_tokens: int = int(_config.get("coder_max_tokens", 12000))
 
 llm = ChatOpenAI(
     model=os.getenv("code_llm_model"),
     api_key=os.getenv("code_llm_key"),
     base_url=os.getenv("code_llm_base_url"),
-    stream_chunk_timeout=600,
+    max_tokens=coder_max_tokens,
+    stream_chunk_timeout=300,
+    use_responses_api=False,  # 强制走 Chat Completions：code_llm 常为 codex/o 系列，否则 langchain-openai 1.x 会自动路由到 /v1/responses，与我们现有 payload 形态不匹配
 )
 
 

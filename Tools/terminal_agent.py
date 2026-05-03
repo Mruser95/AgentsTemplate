@@ -22,7 +22,8 @@ from toolagent_prompt import TERMINAL_CHECKER_PROMPT, TERMINAL_SUMMARY_PROMPT  #
 with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as _f:
     _cfg = yaml.safe_load(_f)
 
-SHELL_OUTPUT_MAX_LENGTH: int = int(_cfg.get("shell_output_max_length", 8000))
+SHELL_OUTPUT_MAX_LENGTH: int = int(_cfg.get("shell_output_max_length", 3000))
+TERMINAL_SMALL_MAX_TOKENS: int = int(_cfg.get("terminal_small_max_tokens", 1024))
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
@@ -73,6 +74,7 @@ def _llm_singleton() -> ChatOpenAI:
             model=os.getenv("small_llm_model"),
             api_key=os.getenv("small_llm_key"),
             base_url=os.getenv("small_llm_base_url"),
+            max_tokens=TERMINAL_SMALL_MAX_TOKENS,
             streaming=False,
         )
     return _llm

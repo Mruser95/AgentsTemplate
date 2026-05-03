@@ -43,6 +43,7 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
 tasker_run_call_limit: int = _config.get("tasker_run_call_limit", 30)
 tasker_thread_call_limit: int = _config.get("tasker_thread_call_limit", 100)
 tasker_exit_behavior: str = _config.get("tasker_exit_behavior", "end")
+tasker_max_tokens: int = int(_config.get("tasker_max_tokens", 4096))
 dispatch_count_limit: int = _config.get("dispatch_count_limit", 10)
 
     
@@ -303,6 +304,7 @@ llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
+    max_tokens=tasker_max_tokens,
 )
 
 _dispatch_coder_tool = DispatchCoder()

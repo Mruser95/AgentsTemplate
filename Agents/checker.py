@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
+from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
 from agents_prompt import checker_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -25,12 +26,14 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
 checker_run_call_limit: int = _config.get("checker_run_call_limit", 20)
 checker_thread_call_limit: int = _config.get("checker_thread_call_limit", 60)
 checker_exit_behavior: str = _config.get("checker_exit_behavior", "end")
+checker_max_tokens: int = int(_config.get("checker_max_tokens", 2048))
 
 
 llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
+    max_tokens=checker_max_tokens,
 )
 
 
@@ -108,7 +111,7 @@ class CheckerReport(BaseModel):
 def build_checker_agent():
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell()],
+        tools=[SkillLibrary(), SafeShell(), RepoMap(), Grep(), Glob()],
         system_prompt=checker_prompt,
         response_format=CheckerReport,
         middleware=[

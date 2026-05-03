@@ -123,19 +123,51 @@ def is_summary_message(msg: Any) -> bool:
     return isinstance(content, str) and content.startswith(SUMMARY_MARKER)
 
 
+def _tool_call_groups(msgs: list) -> dict[str, set[str]]:
+    """member_id -> 同组全部成员 ids；AIMessage(tool_calls) 与子 ToolMessage 不可拆。"""
+    from langchain_core.messages import AIMessage, ToolMessage
+    groups: dict[str, set[str]] = {}
+    by_tc: dict[str, str] = {}
+    for m in msgs:
+        if isinstance(m, AIMessage) and m.tool_calls:
+            groups[m.id] = {m.id}
+            for tc in m.tool_calls:
+                by_tc[tc["id"]] = m.id
+        elif isinstance(m, ToolMessage) and m.tool_call_id in by_tc:
+            groups[by_tc[m.tool_call_id]].add(m.id)
+    return {mid: g for g in groups.values() for mid in g}
+
+
 async def compress_ckpt_messages(thread_id: str, removed_ids: list[str], summary_text: str) -> None:
-    ids = [i for i in (removed_ids or []) if i]
+    """删除指定消息并追加摘要 SystemMessage；同组（AIMessage + 子 ToolMessage）整体进出。"""
+    ids = {i for i in (removed_ids or []) if i}
     if not ids or not summary_text:
         return
     from langchain_core.messages import RemoveMessage, SystemMessage
     from Agents.manager import open_manager_agent  # 局部导入避免循环
 
+    flat = _tool_call_groups(await read_ckpt_msgs(thread_id))
+    safe_ids = ids | {x for mid in ids for x in flat.get(mid, ())}
+    ops = [RemoveMessage(id=i) for i in safe_ids]
+    ops.append(SystemMessage(content=f"{SUMMARY_MARKER}\n{summary_text}"))
     async with open_manager_agent(thread_id=thread_id) as agent:
-        ops: list = [RemoveMessage(id=i) for i in ids]
-        ops.append(SystemMessage(content=f"{SUMMARY_MARKER}\n{summary_text}"))
-        await agent.aupdate_state(
-            {"configurable": {"thread_id": thread_id}},
-            {"messages": ops},
-        )
+        await agent.aupdate_state({"configurable": {"thread_id": thread_id}}, {"messages": ops})
+
+
+async def repair_orphan_tool_calls(thread_id: str) -> int:
+    """给未被回答的 tool_call 补 dummy ToolMessage，返回修复条数。"""
+    from langchain_core.messages import AIMessage, ToolMessage
+    from Agents.manager import open_manager_agent
+
+    msgs = await read_ckpt_msgs(thread_id)
+    answered = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
+    orphans = [tc["id"] for m in msgs if isinstance(m, AIMessage)
+               for tc in (m.tool_calls or []) if tc["id"] not in answered]
+    if not orphans:
+        return 0
+    dummies = [ToolMessage(content="[auto-repair] interrupted; no result.", tool_call_id=tc) for tc in orphans]
+    async with open_manager_agent(thread_id=thread_id) as agent:
+        await agent.aupdate_state({"configurable": {"thread_id": thread_id}}, {"messages": dummies})
+    return len(orphans)
 
 

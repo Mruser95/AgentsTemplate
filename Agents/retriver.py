@@ -26,11 +26,13 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
     _config = yaml.safe_load(f) or {}
 
 retriever_recursion_limit: int = int(_config.get("retriever_recursion_limit", 80))
+retriever_max_tokens: int = int(_config.get("retriever_max_tokens", 4096))
 
 llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
+    max_tokens=retriever_max_tokens,
     stream_chunk_timeout=180,
 )
 

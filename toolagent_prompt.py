@@ -24,7 +24,7 @@ Field guidance
 - summary:         3–8 sentences. Factual, neutral tone. No first person.
                    Cover: what the user wanted, what was tried, what was
                    decided, where things stand now.
-- turn_range:      (start_turn, end_turn) inclusive, 1-indexed over the input.
+- turn_range:      [start_turn, end_turn] inclusive, 1-indexed over the input.
 - key_issues:      Concrete problems / blockers / questions that drove the
                    conversation. One short sentence each. Examples:
                    "短期记忆缺少错误与解决方案字段", "Docker 构建在 arm64
@@ -215,7 +215,7 @@ the SkillTree.
 
 You receive:
   - notes:           the recent project notes, newest last.
-  - existing_tree:   a JSON map {"<category>/<name>": "<first ~400 chars>"}
+  - existing_tree:   a JSON map {{"<category>/<name>": "<first ~400 chars>"}}
                      of every skill markdown already stored under SkillTree/.
 
 Return a single JSON object matching SkillTreeBatch. No prose, no markdown
