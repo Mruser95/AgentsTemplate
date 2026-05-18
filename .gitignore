@@ -1,4 +1,5 @@
 .venv/
+.cursor/
 __pycache__/
 ._*
 *.log
@@ -9,3 +10,6 @@ Logs/
 .vscode/
 SkillTree/*/
 .DS_Store
+Knowledge/milvus.db
+Knowledge/doc_store
+Knowledge/origin_file
