@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from llama_index.core import VectorStoreIndex, Settings, StorageContext
 from llama_index.core.ingestion import DocstoreStrategy, IngestionPipeline
+from llama_index.core.storage.docstore import SimpleDocumentStore
 from llama_index.vector_stores.milvus import MilvusVectorStore
 from llama_index.vector_stores.milvus.utils import BM25BuiltInFunction
 from llama_index.llms.openai_like import OpenAILike
@@ -34,12 +35,13 @@ Settings.embed_model = OpenAILikeEmbedding(
 )
 
 doc_dir = Path(__file__).resolve().parent / "doc_store"
+all_doc_dir = Path(__file__).resolve().parent / "all_doc_store"
 
 vector_store = MilvusVectorStore(
     uri=str(Path(__file__).resolve().parent / "milvus.db"),
     collection_name="law_articles",
     dim=4096,
-    overwrite=not (doc_dir / "docstore.json").exists(),
+    overwrite=not ((doc_dir / "docstore.json").exists() and (all_doc_dir / "docstore.json").exists()),
     output_fields=["text", "doc_id"],
     index_config={
         "index_type": "HNSW", 
@@ -53,20 +55,35 @@ vector_store = MilvusVectorStore(
 )
 
 def get_index():
-    has_docstore = (doc_dir / "docstore.json").exists()
-    sc_extra = {"persist_dir": str(doc_dir)} if has_docstore else {}
-    sc = StorageContext.from_defaults(vector_store=vector_store, **sc_extra)
+    has_docstore = (doc_dir / "docstore.json").exists() and (all_doc_dir / "docstore.json").exists()
     if has_docstore:
+        docstore = SimpleDocumentStore.from_persist_dir(str(doc_dir))
+        all_docstore = SimpleDocumentStore.from_persist_dir(str(all_doc_dir))
         vector_store.client.load_collection("law_articles")
-    _, nodes = build_nodes()
+    else:
+        docstore, all_docstore = SimpleDocumentStore(), SimpleDocumentStore()
+    sc = StorageContext.from_defaults(vector_store=vector_store, docstore=all_docstore)
+
+    all_nodes, nodes = build_nodes()
+    new_ids = {n.node_id for n in nodes}
+    for orphan in set(docstore.get_all_document_hashes().values()) - new_ids:
+        docstore.delete_ref_doc(orphan, raise_error=False)
+        vector_store.delete(orphan)
     pipeline = IngestionPipeline(
         transformations=[Settings.embed_model],
         vector_store=vector_store,
-        docstore=sc.docstore,
-        docstore_strategy=DocstoreStrategy.UPSERTS_AND_DELETE,
+        docstore=docstore,
+        docstore_strategy=DocstoreStrategy.UPSERTS,
     )
     pipeline.run(nodes=nodes, show_progress=True)
     pipeline.persist(persist_dir=str(doc_dir))
+    all_new = {n.node_id for n in all_nodes}
+    for orphan in set(all_docstore.get_all_document_hashes().values()) - all_new:
+        all_docstore.delete_document(orphan, raise_error=False)
+    for r in {n.ref_doc_id for n in all_nodes if n.ref_doc_id}:
+        all_docstore._kvstore.delete(r, collection=all_docstore._ref_doc_collection)
+    all_docstore.add_documents(all_nodes)
+    all_docstore.persist(persist_path=str(all_doc_dir / "docstore.json"))
     index = VectorStoreIndex.from_vector_store(vector_store=vector_store, storage_context=sc)
     return index, sc
 
@@ -76,6 +93,6 @@ def get_index():
 if __name__ == "__main__":
     index, storage_context = get_index()
     print(len(Settings.embed_model.get_text_embedding("test")))
-    ques = "未成年枪击国家领导人怎么处理？"
+    ques = "香港杀人按香港法处理还是内地法？同时告知回答参考了哪些法律"
     response = index.as_query_engine(vector_store_query_mode="hybrid",similarity_top_k=5).query(ques)
     print(response)

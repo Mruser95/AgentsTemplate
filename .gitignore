@@ -12,4 +12,5 @@ SkillTree/*/
 .DS_Store
 Knowledge/milvus.db
 Knowledge/doc_store
+Knowledge/all_doc_store
 Knowledge/origin_file

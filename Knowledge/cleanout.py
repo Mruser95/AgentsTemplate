@@ -31,7 +31,7 @@ def read_documents(input_files=None):
 
 CN_NUM = r"[一二三四五六七八九十百千零〇\d]"
 HEADING = re.compile(rf"^第{CN_NUM}+([编章节])\s*.*$", re.M)
-ARTICLE = re.compile(rf"(第{CN_NUM}+条(?:之{CN_NUM}+)?)")
+ARTICLE = re.compile(rf"^(第{CN_NUM}+条(?:之{CN_NUM}+)?)", re.M)
 
 LEVELS = ["part", "chapter", "section"]
 LEVEL_OF = {"编": "part", "章": "chapter", "节": "section"}
@@ -151,7 +151,7 @@ def build_nodes(docs=None):
 if __name__ == "__main__":
     all_nodes, nodes = build_nodes()
     print(len(nodes))
-    for node in nodes[100:120]:
+    for node in nodes[:10]:
         print(node.text)
         print(node.metadata)
         print("-" * 100)
