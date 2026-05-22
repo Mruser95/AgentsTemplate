@@ -72,7 +72,7 @@ async function _streamSSE(threadId, message, callbacks, controller) {
   try {
     var response;
     try {
-      response = await fetch(API_BASE + '/chat/' + threadId, {
+      response = await fetch(API_BASE + '/threads/' + threadId + '/messages', {
         method: 'POST',
         headers: _buildHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ message: message }),

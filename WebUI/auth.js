@@ -44,8 +44,8 @@ function initAuth() {
 
 /**
  * 提交 API Key 进行验证
- * 空白校验 → 调用 GET /history/{threadId} 验证（该端点带鉴权依赖）→ 存储到 localStorage
- * 注意：使用 /history 而非 /health，因为 /health 无鉴权，错误 key 也会通过
+ * 空白校验 → 调用 GET /threads/{threadId}/messages 验证（该端点带鉴权依赖）→ 存储到 localStorage
+ * 注意：使用受保护接口而非 /health，因为 /health 无鉴权，错误 key 也会通过
  * @param {string} key
  * @returns {Promise<{success: boolean, error?: string}>}
  */
@@ -81,7 +81,7 @@ async function submitApiKey(key) {
   };
 
   try {
-    var response = await apiGet('/history/' + threadId);
+    var response = await apiGet('/threads/' + threadId + '/messages');
     if (response.ok) {
       if (errorEl) errorEl.textContent = '';
       if (typeof showView === 'function') showView('chat');

@@ -119,7 +119,7 @@ async function loadThreadHistory() {
   if (messagesEl) messagesEl.innerHTML = '';
 
   try {
-    var response = await apiGet('/history/' + threadId);
+    var response = await apiGet('/threads/' + threadId + '/messages');
     if (!response.ok) {
       // 401 已在 api.js 中被 _handle401 处理，这里静默返回
       if (response.status === 401) return;

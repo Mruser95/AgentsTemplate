@@ -38,7 +38,8 @@ doc_dir = Path(__file__).resolve().parent / "doc_store"
 all_doc_dir = Path(__file__).resolve().parent / "all_doc_store"
 
 vector_store = MilvusVectorStore(
-    uri=str(Path(__file__).resolve().parent / "milvus.db"),
+    uri=os.getenv("MILVUS_URI", str(Path(__file__).resolve().parent / "milvus.db")),
+    token=os.getenv("MILVUS_TOKEN", ""),
     collection_name="law_articles",
     dim=4096,
     overwrite=not ((doc_dir / "docstore.json").exists() and (all_doc_dir / "docstore.json").exists()),
@@ -57,9 +58,13 @@ vector_store = MilvusVectorStore(
 def get_index():
     has_docstore = (doc_dir / "docstore.json").exists() and (all_doc_dir / "docstore.json").exists()
     if has_docstore:
-        docstore = SimpleDocumentStore.from_persist_dir(str(doc_dir))
-        all_docstore = SimpleDocumentStore.from_persist_dir(str(all_doc_dir))
-        vector_store.client.load_collection("law_articles")
+        try:
+            vector_store.client.load_collection("law_articles")
+            docstore = SimpleDocumentStore.from_persist_dir(str(doc_dir))
+            all_docstore = SimpleDocumentStore.from_persist_dir(str(all_doc_dir))
+        except Exception as e:
+            logging.warning("load_collection skipped: %s", e)
+            docstore, all_docstore = SimpleDocumentStore(), SimpleDocumentStore()
     else:
         docstore, all_docstore = SimpleDocumentStore(), SimpleDocumentStore()
     sc = StorageContext.from_defaults(vector_store=vector_store, docstore=all_docstore)

@@ -106,6 +106,9 @@ class SummarizerAgent:
 
     def _messages(self, command: str, output: str) -> list:
         clean = _ANSI_RE.sub("", output)
+        if len(clean) > self.max_length * 2:
+            keep = max(self.max_length, 1000)
+            clean = f"{clean[:keep]}\n...[truncated for summarization]...\n{clean[-keep:]}"
         user = f"Command:\n{command}\n\nOutput ({len(clean)} chars):\n{clean}"
         return [SystemMessage(content=TERMINAL_SUMMARY_PROMPT), HumanMessage(content=user)]
 

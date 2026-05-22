@@ -8,7 +8,7 @@ shell_permissions:
   env_options: [env, printenv, which, whereis, type, uname, hostname, date, whoami, id, uptime, ps]
   other_options: []
   
-shell_count_limit: 50
+shell_count_limit: 30
 shell_default_timeout: 120        # 默认 subprocess 超时（秒）；旧值 30s 会让联网/编译类命令被错杀
 shell_max_timeout: 600            # agent 通过 timeout 入参可申请的上限（秒）
 shell_output_max_length: 3000     # 命令输出超过该字符数会触发 LLM 总结（schema 输出）；<=0 关闭总结
@@ -42,23 +42,23 @@ browser_allowed_domains: []     # empty = allow all; e.g. ["github.com", "google
 # >> Tavily Search Tool Configuration
 tavily_count_limit: 10
 tavily_max_results: 3
-tavily_search_depth: advanced    # "basic" or "advanced"
+tavily_search_depth: basic       # "basic" or "advanced"；优先速度，减少深搜耗时
 tavily_include_answer: true      # let Tavily synthesize a short answer
 tavily_include_domains: []       # empty = no allow-list filter
 tavily_exclude_domains: []       # empty = no exclude filter
 
 
 # >> Tasker Coder Agent Configuration
-tasker_run_call_limit: 60
+tasker_run_call_limit: 40
 tasker_thread_call_limit: 200
 tasker_exit_behavior: end
 tasker_max_tokens: 4096           # tasker_coder 只发 dispatch_coder + TaskerReport，短输出够用
-dispatch_count_limit: 10
+dispatch_count_limit: 6
 
 
 # >> Coder Agent Configuration
 coder_run_call_limit: 50         # max LLM calls per single coder.invoke run
-coder_subtask_run_limit: 40      # 子代理（dispatch_coder 派发的一次性子任务）的强制 step 上限：超过后中间件会优雅退出，coder 必须直接产出 CoderReport 总结
+coder_subtask_run_limit: 24      # 子代理（dispatch_coder 派发的一次性子任务）的强制 step 上限：超过后中间件会优雅退出，coder 必须直接产出 CoderReport 总结
 coder_thread_call_limit: 1000     # max LLM calls across the whole thread (multi-turn)
 coder_exit_behavior: end         # "end" -> graceful stop; "error" -> raise
 coder_lint_max_retries: 2        # max "lint fail -> feedback -> re-invoke" rounds (0 disables retry, status forced BLOCKED on first fail)
@@ -89,8 +89,8 @@ checker_max_tokens: 2048         # CheckerReport 本身短，2K 足够
 manager_run_call_limit: 80       # max LLM calls per single manager.invoke run (executing 阶段会循环派发，预算要够)
 manager_thread_call_limit: 500   # max LLM calls across the whole thread (跨多轮对话累计上限)
 manager_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
-manager_recursion_limit: 200     # max LangGraph steps per single manager run; includes model/tool loop steps
-manager_max_tokens: 4096         # manager 只调度 + 写 plan，短输出够用
+manager_recursion_limit: 120     # 限制单次运行循环步数，避免长时间内部自循环
+manager_max_tokens: 2048         # 限制单次输出长度，减少大段生成导致的等待
 
 
 # >> Collation Scheduler Configuration
