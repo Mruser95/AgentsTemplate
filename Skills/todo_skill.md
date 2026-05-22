@@ -1,12 +1,12 @@
 ---
-tool: working_todo
+tool: todo
 description: 维护 SessionDB/<thread_id>/workingTodo.md，承载 tasker_coder 当前 subtask 的"派单清单"（每条对应一次 dispatch_coder）；写权限归 tasker_coder，manager 只读
 ---
 
-# working_todo Tool — SKILL.md
+# todo Tool — SKILL.md
 
 ## 概览
-`working_todo` 维护 `SessionDB/<thread_id>/workingTodo.md`，给 tasker_coder 当前正在执行的**单个** subtask 打底——把它进一步拆成 N 条**派单清单**（每条对应一次后续 `dispatch_coder` 调用），派完一条勾一条。文件按会话 thread_id 隔离，各会话互不影响。
+`todo` 维护 `SessionDB/<thread_id>/workingTodo.md`，给 tasker_coder 当前正在执行的**单个** subtask 打底——把它进一步拆成 N 条**派单清单**（每条对应一次后续 `dispatch_coder` 调用），派完一条勾一条。文件按会话 thread_id 隔离，各会话互不影响。
 
 **只反映"现在"，不留历史**：每次切到新的 subtask 都要 `clear` + `write_steps` 重写；**workingTodo.md 不是日志**，是当前活动的镜像。
 
@@ -107,12 +107,6 @@ action=view
 
 ## 探索经验
 ```
-1. 应该避免做"清单条数 ≠ dispatch_coder 调用次数"，否则 step_index 会错位、
-   框架自动勾选也会错阶；应该让每条 step 严格对应一次 dispatch_coder。
-2. 应该避免做"手动 mark_done 所有步骤"，除非自动勾选失败；并行派发时框架
-   会按返回顺序逐个勾，manager 看到的进度才不会骗人。
-3. 应该避免做"为了凑步数把单文件硬拆给多个 coder"，会因为同文件互相覆盖而冲突；
-   单文件耦合任务清单 1 条即可，这是合法的、最常见的情况。
-4. 应该避免做"为了推进手动 mark_done 一个未真正完成的 step"，勾上 = DONE 且核过
-   verification；DONE_WITH_CONCERNS / NEEDS_CONTEXT / BLOCKED 不要勾。
+1. 应该避免做..., 否则会导致..., 应该做...
+2. ...
 ```

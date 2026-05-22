@@ -1,8 +1,11 @@
+import argparse
+import asyncio
 import json
 import locale
 import platform
 import subprocess
 import sys
+import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 SCHEDULE_DIR = PROJECT_ROOT / ".schedule"
 SCHEDULE_DIR.mkdir(exist_ok=True)
 
-from Tools._context import current_thread_id  # noqa: E402
+from Tools.utils import current_thread_id  # noqa: E402
 
 _VENV_PYTHON = PROJECT_ROOT / (
     ".venv/Scripts/python.exe" if IS_WINDOWS else ".venv/bin/python"
@@ -35,6 +38,9 @@ CreatorType = Literal["user", "agent", "unknown"]
 _ALLOWED_CREATORS: tuple[str, ...] = ("user", "agent", "unknown")
 
 
+# 模块 1：通用工具 ================================================================
+
+
 def _decode(b: bytes) -> str:
     if not b:
         return ""
@@ -42,6 +48,9 @@ def _decode(b: bytes) -> str:
         return b.decode("utf-8")
     except UnicodeDecodeError:
         return b.decode(locale.getpreferredencoding(False), errors="replace")
+
+
+# 模块 2：Schedule 工具（manager 调用入口） =========================================
 
 
 class ScheduleInput(BaseModel):
@@ -71,14 +80,11 @@ class ScheduleInput(BaseModel):
         default="",
         description=(
             "制定任务时的会话上下文，JSON 字符串；记录当时的背景、目的、关键事实、"
-            "不得违反的约束等。到点时 Tasker_schedule.py 会连同 intent 一起塞给 "
+            "不得违反的约束等。到点时本模块的 runner 会连同 intent 一起塞给 "
             "manager_agent，用于恢复制定任务时的会话状态。"
             "示例：'{\"background\":\"...\",\"purpose\":\"...\",\"constraints\":[...]}'"
         ),
     )
-
-
-# Helper Functions ==================================================================
 
 
 def _sh(cmd: str) -> str:
@@ -92,13 +98,13 @@ def _write_runner(task_id: str) -> Path:
     if IS_WINDOWS:
         p = SCHEDULE_DIR / f"{task_id}.bat"
         p.write_text(
-            f'@echo off\ncd /d "{PROJECT_ROOT}"\n"{PYTHON}" -m Tools.Tasker_schedule --task {task_id}\n',
+            f'@echo off\ncd /d "{PROJECT_ROOT}"\n"{PYTHON}" -m Tools.schedule --task {task_id}\n',
             encoding="utf-8",
         )
     else:
         p = SCHEDULE_DIR / f"{task_id}.sh"
         p.write_text(
-            f'#!/bin/sh\ncd "{PROJECT_ROOT}" && "{PYTHON}" -m Tools.Tasker_schedule --task {task_id}\n',
+            f'#!/bin/sh\ncd "{PROJECT_ROOT}" && "{PYTHON}" -m Tools.schedule --task {task_id}\n',
             encoding="utf-8",
         )
         p.chmod(0o755)
@@ -229,3 +235,66 @@ class Schedule(BaseTool):
         creator: str = "unknown", context: str = "",
     ) -> str:
         return self._run(action, name, intent, time, creator, context)
+
+
+# 模块 3：Runner（被 cron / schtasks 启动的子进程入口） ====================================
+
+
+_CREATOR_LABEL = {
+    "user": "用户明确要求 manager 制定",
+    "agent": "manager 在会话中自主决定制定",
+    "unknown": "来源未知",
+}
+
+def _build_prompt(tid: str, m: dict) -> str:
+    cr = m.get("creator", "unknown")
+    ctx_json = json.dumps(m.get("context") or {}, ensure_ascii=False, indent=2)
+    return (
+        f"【定时任务 · {m.get('name', '(未命名)')}】\n"
+        f"你（manager）在 {m.get('created_at', '(未知时间)')} 登记了这条定时任务，"
+        f"现在到点被自动唤醒。\n"
+        f"任务 ID：{tid}\n"
+        f"发起者：{cr}（{_CREATOR_LABEL.get(cr, '(非约定枚举值)')}）\n"
+        f"执行者：manager（本工程里唯一被允许执行定时任务的 agent）\n"
+        f"\n---\n"
+        f"原始意图（到点要做什么）：\n{m.get('intent', '')}\n"
+        f"\n制定任务时记录下来的会话上下文（背景 / 目的 / 约束，JSON）：\n"
+        f"```json\n{ctx_json}\n```\n"
+        f"---\n\n"
+        f"请把上面的上下文视作\u201c制定这条任务时的会话状态\u201d，据此恢复当时的思路并"
+        f"按原始意图执行；完成后给出简短总结。"
+    )
+
+
+async def _run_task(tid: str) -> None:
+    # 延迟 import：manager 模块会加载 checkpointer，避免在参数解析阶段就强制初始化
+    from Agents.manager import manager_session
+
+    meta = json.loads((SCHEDULE_DIR / f"{tid}.json").read_text(encoding="utf-8"))
+    log_dir = SCHEDULE_DIR / tid
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    stamp = datetime.now().isoformat(timespec="seconds")
+    try:
+        prompt = _build_prompt(tid, meta)
+        thread_id = meta.get("thread_id") or f"schedule:{tid}"
+        async with manager_session(thread_id=thread_id) as sess:
+            result = await sess.ainvoke(prompt)
+        last = result["messages"][-1]
+        log_path.write_text(
+            f"[OK] {stamp} thread_id={thread_id}\n\n{getattr(last, 'content', str(last))}",
+            encoding="utf-8",
+        )
+    except Exception:
+        log_path.write_text(f"[ERR] {stamp}\n\n{traceback.format_exc()}", encoding="utf-8")
+        raise
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--task", required=True, help="创建任务时生成的 task_id")
+    asyncio.run(_run_task(ap.parse_args().task))
+
+
+if __name__ == "__main__":
+    main()

@@ -1,10 +1,11 @@
-from typing import Any, Literal
+from contextvars import ContextVar
+from typing import Any, Awaitable, Callable, Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.messages import HumanMessage
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from dotenv import load_dotenv
 import asyncio
 import os
@@ -17,11 +18,15 @@ if str(PROJECT_ROOT) not in sys.path:
 from Tools.terminal import SafeShell
 from Tools.tavily import TavilySearch
 from Tools.skills import SkillLibrary
-from Tools.write_file import WriteFile
+from Tools.edit import Edit
+from Tools.overview import Glob, Grep, RepoMap
 from Tools.linter import LintOutcome, alint_paths, lint_paths
-from Tools._context import OnEvent, current_thread_id
-from Tools._workspace import workspace_dir
+from Tools.utils import current_thread_id, workspace_dir
 from agents_prompt import coder_prompt
+
+# 事件流回调（供 Tasker_coder 等下游 agent 复用） 
+OnEvent = Callable[[dict], Awaitable[None]]
+on_event_var: ContextVar[Optional[OnEvent]] = ContextVar("on_event", default=None)
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -29,15 +34,19 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
     _config = yaml.safe_load(f) or {}
 
 coder_run_call_limit: int = _config.get("coder_run_call_limit", 30)
+coder_subtask_run_limit: int = _config.get("coder_subtask_run_limit", 40)
 coder_thread_call_limit: int = _config.get("coder_thread_call_limit", 100)
 coder_exit_behavior: str = _config.get("coder_exit_behavior", "end")
-coder_lint_max_retries: int = _config.get("coder_lint_max_retries", 3)
+coder_lint_max_retries: int = _config.get("coder_lint_max_retries", 2)
+coder_max_tokens: int = int(_config.get("coder_max_tokens", 12000))
 
 llm = ChatOpenAI(
     model=os.getenv("code_llm_model"),
     api_key=os.getenv("code_llm_key"),
     base_url=os.getenv("code_llm_base_url"),
-    stream_chunk_timeout=600,
+    max_tokens=coder_max_tokens,
+    stream_chunk_timeout=300,
+    use_responses_api=False,  # 强制走 Chat Completions：code_llm 常为 codex/o 系列，否则 langchain-openai 1.x 会自动路由到 /v1/responses，与我们现有 payload 形态不匹配
 )
 
 
@@ -89,6 +98,8 @@ class LintResult(BaseModel):
 
 
 class CoderReport(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     status: CoderStatus = Field(
         description=(
             "子任务执行状态，四选一："
@@ -128,15 +139,9 @@ class CoderReport(BaseModel):
             "没跑过就写空串，并把 status 降级为 DONE_WITH_CONCERNS。"
         ),
     )
-    lint: LintResult = Field(
-        default_factory=LintResult,
-        description=(
-            "由上层 Python gate（invoke_with_lint_gate）自动填充，agent 不必自填。"
-            "Gate 会按扩展名跑语法级 lint（py_compile / node --check / gofmt / "
-            "javac / gcc -fsyntax-only），不过会把错误塞回让 coder 继续修，最多"
-            "重试 coder_lint_max_retries 次，超限自动将 status 置为 BLOCKED。"
-        ),
-    )
+    # 注意：lint 字段不在 schema 里。由 invoke_with_lint_gate 在结构化输出
+    # 解析完成后通过 setattr 注入（CoderReport.model_config = extra='allow'），
+    # 既能 model_dump 出来，也不会让 LLM 反复尝试自填嵌套 LintResult。
     key_decisions: list[str] = Field(
         default_factory=list,
         description="影响实现的关键判断 / 取舍 / 与原需求不一致之处。",
@@ -152,7 +157,7 @@ class CoderReport(BaseModel):
 
 _TASK_PROMPT_SEPARATOR = "\n\n---\n\n"
 
-def build_coder_agent(task_specific_prompt: str = ""):
+def build_coder_agent(task_specific_prompt: str = "", *, run_limit: int | None = None):
     system_prompt = (
         coder_prompt + _TASK_PROMPT_SEPARATOR + task_specific_prompt
         if task_specific_prompt.strip()
@@ -160,12 +165,12 @@ def build_coder_agent(task_specific_prompt: str = ""):
     )
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell(), WriteFile(), TavilySearch()],
+        tools=[SkillLibrary(), SafeShell(), Edit(), RepoMap(), Grep(), Glob(), TavilySearch()],
         system_prompt=system_prompt,
         response_format=CoderReport,
         middleware=[
             ModelCallLimitMiddleware(
-                run_limit=coder_run_call_limit,
+                run_limit=coder_run_call_limit if run_limit is None else int(run_limit),
                 thread_limit=coder_thread_call_limit,
                 exit_behavior=coder_exit_behavior,
             ),

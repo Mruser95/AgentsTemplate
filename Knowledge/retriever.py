@@ -1,244 +1,111 @@
-import asyncio
-import glob
-import json
-import os
-import sys
+import os, httpx
+from llama_index.core import Settings
+from llama_index.core.retrievers import VectorIndexRetriever, QueryFusionRetriever
+from llama_index.core.retrievers import AutoMergingRetriever
+from llama_index.core.vector_stores import MetadataFilters, MetadataFilter
+from llama_index.core.postprocessor.types import BaseNodePostprocessor
 from pathlib import Path
-from typing import Optional, Type
-import jieba
-import numpy as np
-import psycopg
-import yaml
-from langchain_core.tools import BaseTool
-from pgvector.psycopg import register_vector
+from typing import Type
 from pydantic import BaseModel, Field, PrivateAttr
-from rank_bm25 import BM25Okapi
-from sentence_transformers import CrossEncoder, SentenceTransformer
+from langchain_core.tools import BaseTool
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from Tools._context import bump_budget, current_thread_id  # noqa: E402
-
-with open(PROJECT_ROOT / "config.yaml", encoding="utf-8") as _f:
-    _cfg = yaml.safe_load(_f) or {}
-
-DSN: str = os.getenv("RAG_DSN") or _cfg.get(
-    "dsn", "postgresql://postgres:postgres@localhost:5432/rag"
-)
-DIM: int = int(_cfg.get("dim", 1024))
-EMBED_MODEL: str = _cfg.get("embed_model", "BAAI/bge-m3")
-RERANK_MODEL: str = _cfg.get("rerank_model", "BAAI/bge-reranker-v2-m3")
-RETRIEVE_TOP_K: int = int(_cfg.get("retrieve_top_k", 5))
-RETRIEVE_CALL_LIMIT: int = int(_cfg.get("retrieve_call_limit", 20))
-VEC_K: int = int(_cfg.get("vec_k", 30))
-BM25_K: int = int(_cfg.get("bm25_k", 30))
-RRF_C: int = int(_cfg.get("rrf_c", 60))
-
-def _tokenize(text: str) -> list[str]:
-    return [w for w in jieba.cut_for_search(text.lower()) if w.strip()]
+import sys
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+from Knowledge.createIndex import get_index # noqa: E402
+from Tools.utils import bump_budget, current_thread_id  # noqa: E402
 
 
-def _load_docs(path: str) -> list[dict]:
-    with open(path, encoding="utf-8") as f:
-        records = (
-            [json.loads(line) for line in f if line.strip()]
-            if path.endswith(".jsonl")
-            else json.load(f)
-        )
-    return [r for r in records if r.get("content")]
+class RerankAPI(BaseNodePostprocessor):
+    top_n: int = 10
+    def _postprocess_nodes(self, nodes, query_bundle=None):
+        res = httpx.post(
+            os.getenv("rerank_base_url"),
+            headers={"Authorization": f"Bearer {os.getenv('small_llm_key')}"},
+            json={"model": os.getenv("rerank_model"), "query": query_bundle.query_str,
+                  "documents": [n.get_content() for n in nodes], "top_n": self.top_n}
+        ).json()
+        out = []
+        for r in res["results"]:
+            node = nodes[r["index"]]
+            node.score = float(r.get("relevance_score", r.get("score", 0.0)))
+            out.append(node)
+        return out
 
 
-def _format_hits(hits: list[dict], snippet: int = 500) -> str:
-    if not hits:
-        return "No results."
-    parts = []
-    for i, h in enumerate(hits, 1):
-        body = h["content"].strip()
-        if len(body) > snippet:
-            body = body[:snippet] + "...[truncated]"
-        parts.append(f"[{i}] id={h['id']}  score={h['score']:.4f}\n{body}")
-    return "\n\n".join(parts)
+reranker = RerankAPI()
+auto_merging_retriever = None
 
 
-class HybridRetriever:
-    def __init__(self, dsn: str = DSN) -> None:
-        self.dsn = dsn
-        self._conn: Optional[psycopg.Connection] = None
-        self._embedder: Optional[SentenceTransformer] = None
-        self._reranker: Optional[CrossEncoder] = None
-        self._bm25: Optional[BM25Okapi] = None
-        self._ids: list[int] = []
+def _get_retriever():
+    global auto_merging_retriever
+    if auto_merging_retriever is not None:
+        return auto_merging_retriever
 
-    @property
-    def conn(self) -> psycopg.Connection:
-        if self._conn is None or self._conn.closed:
-            c = psycopg.connect(self.dsn, autocommit=True)
-            register_vector(c)
-            c.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            c.execute(
-                f"CREATE TABLE IF NOT EXISTS chunks (id SERIAL PRIMARY KEY, "
-                f"content TEXT NOT NULL, metadata JSONB, embedding vector({DIM}))"
-            )
-            c.execute(
-                "CREATE INDEX IF NOT EXISTS chunks_emb_idx ON chunks "
-                "USING hnsw (embedding vector_cosine_ops)"
-            )
-            self._conn = c
-        return self._conn
-
-    @property
-    def embedder(self) -> SentenceTransformer:
-        if self._embedder is None:
-            self._embedder = SentenceTransformer(EMBED_MODEL)
-        return self._embedder
-
-    @property
-    def reranker(self) -> CrossEncoder:
-        if self._reranker is None:
-            self._reranker = CrossEncoder(RERANK_MODEL)
-        return self._reranker
-
-    def count(self) -> int:
-        return int(self.conn.execute("SELECT count(*) FROM chunks").fetchone()[0])
-
-    def ingest(self, files: list[str], batch: int = 64) -> int:
-        docs = [d for p in files for d in _load_docs(p)]
-        if not docs:
-            return 0
-        texts = [d["content"] for d in docs]
-        metas = [json.dumps(d.get("metadata") or {}, ensure_ascii=False) for d in docs]
-        embs = self.embedder.encode(
-            texts, normalize_embeddings=True, batch_size=batch, show_progress_bar=False
-        )
-        with self.conn.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO chunks (content, metadata, embedding) VALUES (%s, %s, %s)",
-                list(zip(texts, metas, embs)),
-            )
-        self._bm25 = None
-        return len(docs)
-
-    def _load_bm25(self) -> None:
-        rows = self.conn.execute("SELECT id, content FROM chunks").fetchall()
-        self._ids = [r[0] for r in rows]
-        corpus = [_tokenize(r[1]) for r in rows]
-        self._bm25 = BM25Okapi(corpus) if corpus else None
-
-    def search(self, query: str, k: int = RETRIEVE_TOP_K, 
-        vec_k: int = VEC_K, bm25_k: int = BM25_K, rrf_c: int = RRF_C
-    ) -> list[dict]:
-        if self._bm25 is None:
-            self._load_bm25()
-        if not self._ids or self._bm25 is None:
-            return []
-
-        qv = self.embedder.encode(query, normalize_embeddings=True)
-        vec_hits = self.conn.execute(
-            "SELECT id FROM chunks ORDER BY embedding <=> %s LIMIT %s", (qv, vec_k)
-        ).fetchall()
-        bm_scores = self._bm25.get_scores(_tokenize(query))
-        bm_top = np.argsort(bm_scores)[-bm25_k:][::-1]
-
-        rrf: dict[int, float] = {}
-        for r, (cid,) in enumerate(vec_hits):
-            rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (rrf_c + r)
-        for r, i in enumerate(bm_top):
-            cid = self._ids[int(i)]
-            rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (rrf_c + r)
-
-        cand = sorted(rrf, key=rrf.get, reverse=True)[: max(vec_k, bm25_k)]
-        rows = self.conn.execute(
-            "SELECT id, content, metadata FROM chunks WHERE id = ANY(%s)", (cand,)
-        ).fetchall()
-        by_id = {r[0]: (r[1], r[2]) for r in rows}
-
-        pairs = [(query, by_id[cid][0]) for cid in cand if cid in by_id]
-        if not pairs:
-            return []
-        scores = self.reranker.predict(pairs)
-        ranked = sorted(zip(cand, scores), key=lambda x: x[1], reverse=True)[:k]
-        return [
-            {"id": cid, "content": by_id[cid][0], "metadata": by_id[cid][1], "score": float(s)}
-            for cid, s in ranked
-        ]
-
-
-# Tools =======================================================================
-
-
-_retriever: Optional[HybridRetriever] = None
-
-def get_retriever() -> HybridRetriever:
-    global _retriever
-    if _retriever is None:
-        _retriever = HybridRetriever()
-    return _retriever
-
-
-class IngestInput(BaseModel):
-    pattern: str = Field(
-        description='Glob for chunk JSON/JSONL files, e.g. "Knowledge/chunks/*.json". '
-                    'Each record must be {"content": str, "metadata": dict} (metadata optional).'
+    index, sc = get_index()
+    base_retriever = VectorIndexRetriever(
+        index=index,
+        similarity_top_k=30,
+        vector_store_query_mode="hybrid",
     )
-
-class SearchInput(BaseModel):
-    query: str = Field(description="Natural-language query in Chinese or English.")
-    k: int = Field(default=RETRIEVE_TOP_K, ge=1, le=20, description="Top-K after rerank.")
-
-
-class KnowledgeIngest(BaseTool):
-    name: str = "knowledge_ingest"
-    description: str = (
-        "Ingest chunk JSON/JSONL files into the local pgvector store. "
-        "Run once per new dataset; do not re-ingest the same files."
+    hybrid_retriever = QueryFusionRetriever(
+        retrievers=[base_retriever],
+        llm=Settings.llm,
+        num_queries=4,                  # 原 query + 3 条改写 = 4 路
+        similarity_top_k=50,
+        mode="reciprocal_rerank",       # RRF
+        use_async=True,
+        verbose=False,
     )
-    args_schema: Type[BaseModel] = IngestInput
+    auto_merging_retriever = AutoMergingRetriever(
+        hybrid_retriever,
+        storage_context=sc,
+        simple_ratio_thresh=0.5,
+        verbose=False,
+    )
+    return auto_merging_retriever
 
-    def _run(self, pattern: str) -> str:
-        files = glob.glob(pattern)
-        if not files:
-            return f"No files matched: {pattern}"
-        try:
-            r = get_retriever()
-            before = r.count()
-            added = r.ingest(files)
-            after = r.count()
-        except Exception as e:
-            return f"knowledge_ingest failed: {e!r}"
-        return f"Ingested {added} chunks from {len(files)} file(s). Store: {before} -> {after}."
 
-    async def _arun(self, pattern: str) -> str:
-        return await asyncio.to_thread(self._run, pattern)
+def retrieve(query: str):
+    nodes = _get_retriever().retrieve(query)
+    nodes = nodes[:20]                                  
+    nodes = reranker.postprocess_nodes(nodes, query_str=query)   
+    return nodes
+
+
+class KnowledgeInput(BaseModel):
+    query: str = Field(description="自然语言检索 query")
 
 
 class KnowledgeSearch(BaseTool):
     name: str = "knowledge_search"
-    description: str = (
-        "Hybrid (vector + BM25 + CrossEncoder rerank) search over the local knowledge store. "
-        "Use for domain facts already ingested; do NOT use for open-web lookups."
-    )
-    args_schema: Type[BaseModel] = SearchInput
-    max_tool_calls: int = Field(default=RETRIEVE_CALL_LIMIT)
+    description: str = "本地 Milvus 知识库混合检索（vector + BM25 + rerank）。"
+    args_schema: Type[BaseModel] = KnowledgeInput
+    max_tool_calls: int = 20
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)
 
-    def reset(self) -> None:
-        self._call_counts.clear()
-
-    def _run(self, query: str, k: int = RETRIEVE_TOP_K) -> str:
+    def _run(self, query: str) -> str:
         tid = current_thread_id()
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)
         if not ok:
-            return (
-                f"Tool call limit reached ({self.max_tool_calls}) for thread {tid}. "
-                "Stop using knowledge_search."
-            )
+            return f"Tool call limit reached ({self.max_tool_calls})."
         try:
-            body = _format_hits(get_retriever().search(query, k=k))
+            nodes = retrieve(query)
         except Exception as e:
-            body = f"knowledge_search failed: {e!r}"
-        return f"{body}\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
+            return f"knowledge_search failed: {e!r}"
+        if not nodes:
+            return f"No results.\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
+        parts = [f"[{i}] score={(nd.score or 0):.4f}\n{nd.get_content()[:500]}"
+                 for i, nd in enumerate(nodes, 1)]
+        return "\n\n".join(parts) + f"\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
 
-    async def _arun(self, query: str, k: int = RETRIEVE_TOP_K) -> str:
-        return await asyncio.to_thread(self._run, query, k)
+    async def _arun(self, query: str) -> str:
+        return self._run(query)
+
+
+if __name__ == "__main__":
+    ques = "香港"
+    for n in retrieve(ques):
+        print(f"[{n.score:.4f}] {n.metadata.get('article', '')}")
+        print(n.text[:200])
+        print("-" * 80)
+

@@ -1,18 +1,18 @@
 ---
-tool: plan_io
+tool: plan
 description: 读写 SessionDB/<thread_id>/plan.json；update_subtask_status='done' 时强制触发 checker 硬 gate 并把 CheckerReport 嵌回返回值
 ---
 
-# plan_io Tool — SKILL.md
+# plan Tool — SKILL.md
 
 ## 概览
-`plan_io` 是 manager 维护 `SessionDB/<thread_id>/plan.json` 的唯一通道。它**只能由 manager 使用**。plan 文件按会话 thread_id 隔离，每个会话独立一份。
+`plan` 是 manager 维护 `SessionDB/<thread_id>/plan.json` 的唯一通道。它**只能由 manager 使用**。plan 文件按会话 thread_id 隔离，每个会话独立一份。
 
 最关键的特性：**`update_subtask_status` 当 `new_status='done'` 时，工具会同步触发 `checker_agent` 做对齐检查，并把完整的 `CheckerReport` 嵌入返回值**。这是 hard gate —— manager **绕不过**这次检查，必须读完报告再决定下一步。
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ manager 调 plan_io(action='update_subtask_status',         │
+│ manager 调 plan(action='update_subtask_status',         │
 │                    subtask_id='m1-t1', new_status='done')   │
 │                          │                                   │
 │                          ▼                                   │
@@ -30,7 +30,7 @@ description: 读写 SessionDB/<thread_id>/plan.json；update_subtask_status='don
 
 ## ⛔ 硬约束
 
-1. **只有 manager 能用** —— 工具 description 已声明；其他 agent 的工具表里不要出现 `plan_io`。
+1. **只有 manager 能用** —— 工具 description 已声明；其他 agent 的工具表里不要出现 `plan`。
 2. **plan.json 是唯一可信事实源** —— 不要用 terminal 直接 `cat` / 写 plan.json，所有读写都走本工具。
 3. **`update_subtask_status` 的 done 调用是 hard gate** —— 你**不能**在没拿到 CheckerReport 之前就开始下一个 subtask；不能"忽略报告里的 major_drift"。
 4. **写入是覆盖式** —— `write` 会替换整个 plan.json。**先 read 拿到现状，再在内存里改完一次性 write 回去**，避免漏字段。
@@ -153,11 +153,6 @@ new_status=done
 
 ## 探索经验
 ```
-1. 应该避免做"用 terminal 直接 cat / echo > plan.json"，否则会绕过工具的状态校验、
-   updated_at 自动维护、以及 checker hard gate；应该所有 plan 读写都走 plan_io。
-2. 应该避免做"update_subtask_status='done' 后立即调 update_subtask_status 把另一条
-   subtask 也置 done"，否则会让 hard gate 的 CheckerReport 还没读就被新报告覆盖；
-   应该一次只 done 一个 subtask、读完报告并按建议处理后再处理下一个。
-3. 应该避免做"在 plan.status='drafting' 时就开始派发 subagent 干活"，否则会做一堆
-   plan 还没定型的工作；应该先 set_plan_status='ready' 并向用户确认 plan 后再开工。
+1. 应该避免做..., 否则会导致..., 应该做...
+2. ...
 ```

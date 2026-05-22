@@ -65,7 +65,7 @@ async function refreshFilePanel() {
   body.innerHTML = '<div class="file-panel-loading">加载中…</div>';
 
   try {
-    var response = await apiGet('/files/' + threadId);
+    var response = await apiGet('/threads/' + threadId + '/files');
     if (!response.ok) {
       body.innerHTML = '<div class="file-panel-empty">加载失败（' + response.status + '）</div>';
       return;
@@ -132,7 +132,7 @@ function _createFileItem(file, threadId, index) {
  */
 function _downloadFile(threadId, path, filename, btn) {
   var url = (typeof API_BASE !== 'undefined' ? API_BASE : '') +
-    '/download/' + encodeURIComponent(threadId) + '?path=' + encodeURIComponent(path);
+    '/threads/' + encodeURIComponent(threadId) + '/files/' + encodeURI(path);
 
   var headers = typeof _buildHeaders === 'function' ? _buildHeaders({}) : {};
 

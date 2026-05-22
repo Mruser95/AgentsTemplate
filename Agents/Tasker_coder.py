@@ -21,16 +21,18 @@ from Agents.coder import (  # noqa: E402
     CoderModule,
     CoderReport,
     FileChange,
+    OnEvent,
     UsageExample,
     ainvoke_with_lint_gate,
     astream_collect_final_state,
     build_coder_agent,
+    coder_subtask_run_limit,
     invoke_with_lint_gate,
+    on_event_var,
 )
-from Tools._context import OnEvent, bump_budget, current_thread_id, on_event_var  # noqa: E402
-from Tools._workspace import workspace_info  # noqa: E402
+from Tools.utils import bump_budget, current_thread_id, workspace_info  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
-from Tools.working_todo import WorkingTodo  # noqa: E402
+from Tools.todo import Todo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -41,6 +43,7 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
 tasker_run_call_limit: int = _config.get("tasker_run_call_limit", 30)
 tasker_thread_call_limit: int = _config.get("tasker_thread_call_limit", 100)
 tasker_exit_behavior: str = _config.get("tasker_exit_behavior", "end")
+tasker_max_tokens: int = int(_config.get("tasker_max_tokens", 4096))
 dispatch_count_limit: int = _config.get("dispatch_count_limit", 10)
 
     
@@ -168,7 +171,7 @@ class DispatchCoderInput(BaseModel):
         description=(
             "对应 workingTodo.md 中的 step 1-based 索引——本次 dispatch_coder 派发的"
             "就是该 step 描述的那条任务。子代理返回 status=DONE 时，框架会**自动**调"
-            " working_todo.mark_done(step_index)，无需你再手勾；非 DONE 状态不会勾，"
+            " todo.mark_done(step_index)，无需你再手勾；非 DONE 状态不会勾，"
             "由你按需补派或重派同一 step_index。"
             "强制 1:1：每条 step 必须且只能对应一次 dispatch_coder 调用；并行派发时"
             "也要给出各自正确的 step_index。"
@@ -221,7 +224,7 @@ class DispatchCoder(BaseTool):
     args_schema: Type[BaseModel] = DispatchCoderInput
     max_tool_calls: int = Field(default=dispatch_count_limit)
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)
-    _todo: WorkingTodo = PrivateAttr(default_factory=WorkingTodo)
+    _todo: Todo = PrivateAttr(default_factory=Todo)
 
     def reset(self) -> None:
         self._call_counts.clear()
@@ -237,14 +240,18 @@ class DispatchCoder(BaseTool):
 
     def _dispatch(self, task_name: str, task_prompt: str, context: str) -> str:
         task_block = _format_task_specific_prompt(task_name, task_prompt, context)
-        child_agent = build_coder_agent(task_specific_prompt=task_block)
+        child_agent = build_coder_agent(
+            task_specific_prompt=task_block, run_limit=coder_subtask_run_limit,
+        )
         report = invoke_with_lint_gate(child_agent, _format_child_initial(task_name))
         return _coder_report_to_json(report)
 
     async def _adispatch(self, task_name: str, task_prompt: str, context: str) -> str:
         task_block = _format_task_specific_prompt(task_name, task_prompt, context)
         child_agent = await asyncio.to_thread(
-            build_coder_agent, task_specific_prompt=task_block,
+            build_coder_agent,
+            task_specific_prompt=task_block,
+            run_limit=coder_subtask_run_limit,
         )
         on_event = on_event_var.get()
         report = await ainvoke_with_lint_gate(
@@ -297,13 +304,14 @@ llm = ChatOpenAI(
     model=os.getenv("agent_llm_model"),
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
+    max_tokens=tasker_max_tokens,
 )
 
 _dispatch_coder_tool = DispatchCoder()
 
 tasker_coder_agent = create_agent(
     model=llm,
-    tools=[SkillLibrary(), _dispatch_coder_tool, WorkingTodo()],
+    tools=[SkillLibrary(), _dispatch_coder_tool, Todo()],
     system_prompt=tasker_coder_prompt,
     response_format=TaskerReport,
     middleware=[
