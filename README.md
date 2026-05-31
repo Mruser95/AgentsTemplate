@@ -37,8 +37,8 @@
                                        answer ──► project
 
 工具层：
-  web/browser · shell · edit · repo_map/grep/glob · rag · schedule
-  lint · mcp · skill library · summary
+  web/browser · shell · edit · repo_map/grep/glob · read · rag · schedule
+  lint · mcp · skill library
 ```
 
 ### 关键约定
@@ -68,7 +68,7 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
-| **代码浏览** | `repo_map` / `grep` / `glob` | AST 签名 + PageRank 摘要 / 文本搜索 / 通配符列文件 |
+| **代码读取** | `repo_map` / `grep` / `glob` / `read_file` | AST 签名 + PageRank 摘要 / 文本搜索 / 通配符列文件 / 按行读文件（offset 翻页） |
 | **代码写入** | `edit` | `create / overwrite / str_replace / insert`，受 workspace 边界保护 |
 | **执行** | `terminal` (SafeShell) | 锁定 cwd 在 workspace、超时 / 权限白名单，自动激活会话 venv |
 | **网络** | `tavily_search` | 单点公网查证 |
@@ -120,7 +120,7 @@ docker compose -f Docker/docker-compose.yaml up -d --build
 
 ## 调用预算
 
-每个工具与代理都在 [config.yaml](config.yaml) 配 run（单次 invoke）/ thread（跨多轮）双层调用上限。预算见底时代理会主动收口、压缩、报告，不会无限循环。每条工具返回末尾都会附 `[Tool call X/N, remaining: R]` 提示剩余配额。
+每个工具与代理都在 [config.yaml](config.yaml) 配 run（单次 invoke）级调用上限，每轮重新计数、不跨 thread 累计。预算见底时代理会主动收口、压缩、报告，不会无限循环。每条工具返回末尾都会附 `[Tool call X/N, remaining: R]` 提示剩余配额。
 
 ## 添加你自己的工具 / 技能
 

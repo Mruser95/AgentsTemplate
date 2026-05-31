@@ -20,8 +20,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
+from Tools.read import Read  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
-from Tools.utils import current_thread_id, ensure_workspace  # noqa: E402
+from Tools.utils import current_thread_id, ensure_workspace, llm_runtime_kwargs  # noqa: E402
 from agents_prompt import tester_prompt, runner_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -29,9 +30,10 @@ _CFG = yaml.safe_load((PROJECT_ROOT / "config.yaml").read_text(encoding="utf-8")
 DATASET_FILENAME = "TestDatasets.json"
 
 llm = ChatOpenAI(
-    model=os.getenv("agent_llm_model"),
-    api_key=os.getenv("agent_llm_key"),
-    base_url=os.getenv("agent_llm_base_url"),
+    model=os.getenv("code_llm_model"),
+    api_key=os.getenv("code_llm_key"),
+    base_url=os.getenv("code_llm_base_url"),
+    **llm_runtime_kwargs("tester", _CFG),
 )
 
 
@@ -191,12 +193,11 @@ def _build_agent(prompt: str, schema: type[BaseModel], task_prompt: str, prefix:
     bound_llm = llm.bind(max_tokens=int(_CFG.get(f"{prefix}_max_tokens", 4096)))
     return create_agent(
         model=bound_llm,
-        tools=[SkillLibrary(), SafeShell(), TavilySearch()],
+        tools=[SkillLibrary(), SafeShell(), Read(), TavilySearch()],
         system_prompt=sp,
         response_format=schema,
         middleware=[ModelCallLimitMiddleware(
             run_limit=_CFG.get(f"{prefix}_run_call_limit", 30),
-            thread_limit=_CFG.get(f"{prefix}_thread_call_limit", 100),
             exit_behavior=_CFG.get(f"{prefix}_exit_behavior", "end"),
         )],
     )
@@ -224,17 +225,12 @@ def _make_dispatch(
 
     def _sync(**kw) -> str:
         p = kw[input_arg]; _check(p)
-        state = _build_agent(prompt, schema, p, prefix).invoke(
-            {"messages": [HumanMessage(content=human)]}
-        )
+        state = _build_agent(prompt, schema, p, prefix).invoke({"messages": [HumanMessage(content=human)]})
         return json.dumps(post(_structured(state, schema, prefix)), ensure_ascii=False, indent=2)
 
     async def _async(**kw) -> str:
         p = kw[input_arg]; _check(p)
-        state = await _build_agent(prompt, schema, p, prefix).ainvoke(
-            {"messages": [HumanMessage(content=human)]}
-        )
-        # post 里可能含阻塞 IO（如落盘），统一放线程池
+        state = await _build_agent(prompt, schema, p, prefix).ainvoke({"messages": [HumanMessage(content=human)]})
         payload = await asyncio.to_thread(post, _structured(state, schema, prefix))
         return json.dumps(payload, ensure_ascii=False, indent=2)
 

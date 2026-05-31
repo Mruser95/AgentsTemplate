@@ -4,6 +4,7 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.messages import HumanMessage
+from openai import LengthFinishReasonError
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 from dotenv import load_dotenv
@@ -19,9 +20,10 @@ from Tools.terminal import SafeShell
 from Tools.tavily import TavilySearch
 from Tools.skills import SkillLibrary
 from Tools.edit import Edit
+from Tools.read import Read
 from Tools.overview import Glob, Grep, RepoMap
 from Tools.linter import LintOutcome, alint_paths, lint_paths
-from Tools.utils import current_thread_id, workspace_dir
+from Tools.utils import current_thread_id, llm_runtime_kwargs, workspace_dir
 from agents_prompt import coder_prompt
 
 # 事件流回调（供 Tasker_coder 等下游 agent 复用） 
@@ -35,7 +37,6 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
 
 coder_run_call_limit: int = _config.get("coder_run_call_limit", 30)
 coder_subtask_run_limit: int = _config.get("coder_subtask_run_limit", 40)
-coder_thread_call_limit: int = _config.get("coder_thread_call_limit", 100)
 coder_exit_behavior: str = _config.get("coder_exit_behavior", "end")
 coder_lint_max_retries: int = _config.get("coder_lint_max_retries", 2)
 coder_max_tokens: int = int(_config.get("coder_max_tokens", 12000))
@@ -45,8 +46,8 @@ llm = ChatOpenAI(
     api_key=os.getenv("code_llm_key"),
     base_url=os.getenv("code_llm_base_url"),
     max_tokens=coder_max_tokens,
-    stream_chunk_timeout=300,
     use_responses_api=False,  # 强制走 Chat Completions：code_llm 常为 codex/o 系列，否则 langchain-openai 1.x 会自动路由到 /v1/responses，与我们现有 payload 形态不匹配
+    **llm_runtime_kwargs("coder", _config),  # timeout / max_retries / stream_chunk_timeout / reasoning 见 config.yaml
 )
 
 
@@ -165,13 +166,12 @@ def build_coder_agent(task_specific_prompt: str = "", *, run_limit: int | None =
     )
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell(), Edit(), RepoMap(), Grep(), Glob(), TavilySearch()],
+        tools=[SkillLibrary(), SafeShell(), Read(), Edit(), RepoMap(), Grep(), Glob(), TavilySearch()],
         system_prompt=system_prompt,
         response_format=CoderReport,
         middleware=[
             ModelCallLimitMiddleware(
                 run_limit=coder_run_call_limit if run_limit is None else int(run_limit),
-                thread_limit=coder_thread_call_limit,
                 exit_behavior=coder_exit_behavior,
             ),
         ],
@@ -267,7 +267,10 @@ def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | N
     outcome: LintOutcome | None = None
 
     for attempt in range(limit + 1):
-        state = agent.invoke({"messages": messages})
+        try:
+            state = agent.invoke({"messages": messages})
+        except LengthFinishReasonError:
+            return _missing_structured_response_report()
         report = state.get("structured_response")
         if not isinstance(report, CoderReport):
             return _missing_structured_response_report()
@@ -289,18 +292,22 @@ def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | N
 async def astream_collect_final_state(agent: Any, messages: list, on_event: OnEvent | None = None) -> dict:
     final_state: dict = {}
     root_run_id: str | None = None
-    async for event in agent.astream_events({"messages": messages}, version="v2"):
-        if root_run_id is None and event.get("event") == "on_chain_start":
-            root_run_id = event.get("run_id")
-        if (
-            event.get("event") == "on_chain_end"
-            and event.get("run_id") == root_run_id
-        ):
-            output = (event.get("data") or {}).get("output")
-            if isinstance(output, dict):
-                final_state = output
-        if on_event is not None:
-            await on_event(event)
+    try:
+        async for event in agent.astream_events({"messages": messages}, version="v2"):
+            if root_run_id is None and event.get("event") == "on_chain_start":
+                root_run_id = event.get("run_id")
+            if (
+                event.get("event") == "on_chain_end"
+                and event.get("run_id") == root_run_id
+            ):
+                output = (event.get("data") or {}).get("output")
+                if isinstance(output, dict):
+                    final_state = output
+            if on_event is not None:
+                await on_event(event)
+    except LengthFinishReasonError:
+        # 结构化输出撞 max_tokens 被截断：返回已收集 state（通常为空），让上层走 fallback report，不冒泡崩溃
+        return final_state
     return final_state
 
 

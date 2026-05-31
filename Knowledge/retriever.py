@@ -83,6 +83,9 @@ class KnowledgeSearch(BaseTool):
     max_tool_calls: int = 20
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)
 
+    def reset(self) -> None:
+        self._call_counts.clear()
+
     def _run(self, query: str) -> str:
         tid = current_thread_id()
         ok, n, rem = bump_budget(self._call_counts, tid, self.max_tool_calls)

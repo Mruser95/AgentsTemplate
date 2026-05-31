@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
 load_dotenv(PROJECT_ROOT / '.env')
 
 from Tools.utils import bump_budget, current_thread_id, ensure_workspace, workspace_env  # noqa: E402
-from Tools.terminal_agent import checker_agent, summarizer_agent  # noqa: E402
+from Tools.terminal_agent import checker_agent  # noqa: E402
 
 with open(PROJECT_ROOT / 'config.yaml', 'r', encoding='utf-8') as file:
     config = yaml.safe_load(file)
@@ -26,6 +26,7 @@ shell_permissions: list[str] = [var.strip() for cmds in config['shell_permission
 shell_count_limit: int = config['shell_count_limit']
 shell_default_timeout: int = int(config.get('shell_default_timeout', 120))
 shell_max_timeout: int = int(config.get('shell_max_timeout', 600))
+shell_output_max_length: int = int(config.get('shell_output_max_length', 3000))
 
 
 class SafeShellInput(BaseModel):
@@ -101,6 +102,16 @@ def _run_subprocess(command: str, timeout: int | None = None, cwd: str | None = 
     return stdout + (f"\n{stderr}" if stderr.strip() else "")
 
 
+def _truncate(output: str) -> str:
+    # 超长输出直接头尾截断（不再做 LLM 压缩）：错误多在尾部 traceback，头尾各留一半
+    if shell_output_max_length <= 0 or len(output) <= shell_output_max_length:
+        return output
+    half = shell_output_max_length // 2
+    head, tail = output[:half], output[-half:]
+    omitted = len(output) - len(head) - len(tail)
+    return f"{head}\n...[{omitted} chars truncated, exceeded {shell_output_max_length} limit]...\n{tail}"
+
+
 def _execute(command: str, timeout: int | None = None,cwd: str | None = None,env: dict | None = None) -> str:
     allowed, denied = check_command(command)
     if not allowed:
@@ -111,7 +122,7 @@ def _execute(command: str, timeout: int | None = None,cwd: str | None = None,env
         if not response.allowed:
             return f"Command denied by checker agent: {response.reason}"
     output = _run_subprocess(command, timeout, cwd=cwd, env=env)
-    return summarizer_agent.summarize(command, output)
+    return _truncate(output)
 
 
 async def _execute_async(command: str, timeout: int | None = None, cwd: str | None = None, env: dict | None = None) -> str:
@@ -123,7 +134,7 @@ async def _execute_async(command: str, timeout: int | None = None, cwd: str | No
         if not response.allowed:
             return f"Command denied by checker agent: {response.reason}"
     output = await asyncio.to_thread(_run_subprocess, command, timeout, cwd, env)
-    return await summarizer_agent.asummarize(command, output)
+    return _truncate(output)
 
 
 class SafeShell(BaseTool):

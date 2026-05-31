@@ -8,15 +8,21 @@ shell_permissions:
   env_options: [env, printenv, which, whereis, type, uname, hostname, date, whoami, id, uptime, ps]
   other_options: []
   
-shell_count_limit: 30
-shell_default_timeout: 120        # 默认 subprocess 超时（秒）；旧值 30s 会让联网/编译类命令被错杀
-shell_max_timeout: 600            # agent 通过 timeout 入参可申请的上限（秒）
+shell_count_limit: 20
+shell_default_timeout: 90        # 默认 subprocess 超时（秒）；旧值 30s 会让联网/编译类命令被错杀
+shell_max_timeout: 300            # agent 通过 timeout 入参可申请的上限（秒）
 shell_output_max_length: 3000     # 命令输出超过该字符数会触发 LLM 总结（schema 输出）；<=0 关闭总结
 terminal_small_max_tokens: 1024   # 命令审查 / 输出摘要 small_llm 的 max_tokens；输出只需短 JSON
 
 
 # >> Edit Tool Configuration
-edit_count_limit: 50              # 单个 thread 内 edit 工具的最大调用次数
+edit_count_limit: 20              # 单个 thread 内 edit 工具的最大调用次数
+
+
+# >> Read Tool Configuration
+read_count_limit: 20              # read_file 单 thread 调用上限
+read_default_limit: 2000          # 默认从 offset 起最多读的行数（cat -n 格式）
+read_output_max_chars: 50000      # 单页渲染字符上限（token 预算的字符代理）：默认读超出→只返首页+PARTIAL；显式 offset/limit 超出→直接报错
 
 
 # >> Overview Tools (repo_map / grep / glob) Configuration
@@ -48,46 +54,64 @@ tavily_include_domains: []       # empty = no allow-list filter
 tavily_exclude_domains: []       # empty = no exclude filter
 
 
+# >> LLM Runtime（每个 agent 独立可调：超时 / 重试 / 思考开关）
+# timeout：请求级总超时（秒），stall 时快速失败而非干等；流式 agent 的逐块超时与之对齐
+# max_retries：超时 / 瞬时错误的自动重试次数
+# reasoning：是否开启模型思考，false=关闭（deepseek-v4-pro 实测 ~3.4x 提速 / ~3.5x 降本）
+coder_timeout: 120
+coder_max_retries: 2
+coder_reasoning: false
+tester_timeout: 120              # tester 与 test runner 共用底层 llm，这三项对两者同时生效
+tester_max_retries: 2
+tester_reasoning: false
+tasker_timeout: 120
+tasker_max_retries: 2
+tasker_reasoning: true
+retriever_timeout: 120
+retriever_max_retries: 2
+retriever_reasoning: false
+manager_timeout: 120
+manager_max_retries: 2
+manager_reasoning: true
+checker_timeout: 120
+checker_max_retries: 2
+checker_reasoning: true
+
+
 # >> Tasker Coder Agent Configuration
-tasker_run_call_limit: 40
-tasker_thread_call_limit: 200
+tasker_run_call_limit: 10        # 旧值 40 太松；tasker 只负责拆分+派发+汇总，不该自己多轮
 tasker_exit_behavior: end
-tasker_max_tokens: 4096           # tasker_coder 只发 dispatch_coder + TaskerReport，短输出够用
-dispatch_count_limit: 6
+tasker_max_tokens: 8192           # 汇总多个子任务的 TaskerReport（file_changes/main_modules 合集）可能很长，4096 易被截断触发 LengthFinishReasonError
+dispatch_count_limit: 5          # 单个综合任务最多派 5 个子任务（旧值 6）；每个子任务又是一整轮 coder 循环，控总量防乘法爆炸
 
 
 # >> Coder Agent Configuration
-coder_run_call_limit: 50         # max LLM calls per single coder.invoke run
-coder_subtask_run_limit: 24      # 子代理（dispatch_coder 派发的一次性子任务）的强制 step 上限：超过后中间件会优雅退出，coder 必须直接产出 CoderReport 总结
-coder_thread_call_limit: 1000     # max LLM calls across the whole thread (multi-turn)
+coder_run_call_limit: 10         # max LLM calls per single coder.invoke run（旧值 50 太松；单文件改动正常 5-12 轮够，留余量给 lint 重试）
+coder_subtask_run_limit: 5      # 子代理（dispatch_coder 派发的一次性子任务）的强制 step 上限：超过后中间件会优雅退出，coder 必须直接产出 CoderReport 总结（旧值 24，下调防嵌套乘法爆炸）
 coder_exit_behavior: end         # "end" -> graceful stop; "error" -> raise
 coder_lint_max_retries: 2        # max "lint fail -> feedback -> re-invoke" rounds (0 disables retry, status forced BLOCKED on first fail)
 coder_max_tokens: 8192          # 最大单次输出 token：要容纳整段代码 + CoderReport JSON；不够会触发截断
 
 
 # >> Tester Agent Configuration
-tester_run_call_limit: 30        # max LLM calls per single tester.invoke run
-tester_thread_call_limit: 100    # max LLM calls across the whole thread (multi-turn)
+tester_run_call_limit: 10        # max LLM calls per single tester.invoke run
 tester_exit_behavior: end        # "end" -> graceful stop; "error" -> raise
 tester_max_tokens: 4096          # 输出 TestDataset JSON；用例数量大可按需调高
 
 # >> Test Runner Agent Configuration（执行 TestDatasets.json 并产 TestReport）
-runner_run_call_limit: 60        # 跑用例需要更多 terminal 轮次
-runner_thread_call_limit: 200
+runner_run_call_limit: 30        # 跑用例需要更多 terminal 轮次
 runner_exit_behavior: end
 runner_max_tokens: 4096          # 输出 TestReport JSON；results 数量大可按需调高
 
 
 # >> Checker Agent Configuration
-checker_run_call_limit: 20       # max LLM calls per single checker.invoke run
-checker_thread_call_limit: 60    # max LLM calls across the whole thread (multi-turn)
+checker_run_call_limit: 3       # max LLM calls per single checker.invoke run
 checker_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
 checker_max_tokens: 2048         # CheckerReport 本身短，2K 足够
 
 
 # >> Manager Agent Configuration
-manager_run_call_limit: 80       # max LLM calls per single manager.invoke run (executing 阶段会循环派发，预算要够)
-manager_thread_call_limit: 500   # max LLM calls across the whole thread (跨多轮对话累计上限)
+manager_run_call_limit: 30       # max LLM calls per single manager.invoke run (executing 阶段会循环派发，预算要够)
 manager_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
 manager_recursion_limit: 120     # 限制单次运行循环步数，避免长时间内部自循环
 manager_max_tokens: 2048         # 限制单次输出长度，减少大段生成导致的等待
@@ -120,7 +144,9 @@ embed_model: BAAI/bge-m3
 rerank_model: BAAI/bge-reranker-v2-m3
 retrieve_top_k: 5                # default Top-K returned by knowledge_search
 retrieve_call_limit: 20          # max knowledge_search calls per session
-retriever_recursion_limit: 80    # max LangGraph steps per single retrieve run; includes model/tool loop steps
+retriever_run_call_limit: 6      # 单次 retrieve 内部 LLM 循环上限（核心防烧钱旋钮）：超过即优雅收尾产出 RetrievalReport，避免 tavily/browser 反复空转
+retriever_exit_behavior: end     # "end" -> 超限优雅停并产出结构化报告；"error" -> 直接抛错
+retriever_recursion_limit: 18    # max LangGraph steps per single retrieve run（硬兜底，旧值 80≈40 次 LLM 太松）
 retriever_max_tokens: 4096       # retriever 产 RetrievalReport，长 summary 够用
 
 vec_k: 30

@@ -4,6 +4,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool, StructuredTool
+from openai import LengthFinishReasonError
 from pathlib import Path
 from pydantic import BaseModel, Field, PrivateAttr
 from dotenv import load_dotenv
@@ -30,7 +31,7 @@ from Agents.coder import (  # noqa: E402
     invoke_with_lint_gate,
     on_event_var,
 )
-from Tools.utils import bump_budget, current_thread_id, workspace_info  # noqa: E402
+from Tools.utils import bump_budget, current_thread_id, llm_runtime_kwargs, reset_tool_budgets, workspace_info  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
@@ -41,7 +42,6 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
     _config = yaml.safe_load(f) or {}
 
 tasker_run_call_limit: int = _config.get("tasker_run_call_limit", 30)
-tasker_thread_call_limit: int = _config.get("tasker_thread_call_limit", 100)
 tasker_exit_behavior: str = _config.get("tasker_exit_behavior", "end")
 tasker_max_tokens: int = int(_config.get("tasker_max_tokens", 4096))
 dispatch_count_limit: int = _config.get("dispatch_count_limit", 10)
@@ -305,19 +305,20 @@ llm = ChatOpenAI(
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
     max_tokens=tasker_max_tokens,
+    **llm_runtime_kwargs("tasker", _config),
 )
 
 _dispatch_coder_tool = DispatchCoder()
+_TASKER_TOOLS = [SkillLibrary(), _dispatch_coder_tool, Todo()]
 
 tasker_coder_agent = create_agent(
     model=llm,
-    tools=[SkillLibrary(), _dispatch_coder_tool, Todo()],
+    tools=_TASKER_TOOLS,
     system_prompt=tasker_coder_prompt,
     response_format=TaskerReport,
     middleware=[
         ModelCallLimitMiddleware(
             run_limit=tasker_run_call_limit,
-            thread_limit=tasker_thread_call_limit,
             exit_behavior=tasker_exit_behavior,
         ),
     ],
@@ -359,13 +360,18 @@ def _finalize_tasker_report(report: Any) -> str:
 
 
 def _dispatch_tasker_coder_sync(task_prompt: str) -> str:
-    state = tasker_coder_agent.invoke(
-        {"messages": [HumanMessage(content=task_prompt)]}
-    )
+    reset_tool_budgets(_TASKER_TOOLS)  # 每次进入 tasker_coder 重置工具配额（含 dispatch_coder 派发预算）
+    try:
+        state = tasker_coder_agent.invoke(
+            {"messages": [HumanMessage(content=task_prompt)]}
+        )
+    except LengthFinishReasonError:
+        state = {}
     return _finalize_tasker_report(state.get("structured_response"))
 
 
 async def _dispatch_tasker_coder_inner(task_prompt: str) -> str:
+    reset_tool_budgets(_TASKER_TOOLS)  # 每次进入 tasker_coder 重置工具配额（含 dispatch_coder 派发预算）
     on_event = on_event_var.get()
     state = await astream_collect_final_state(
         tasker_coder_agent,

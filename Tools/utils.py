@@ -96,6 +96,35 @@ def bump_budget(counts: dict[str, int], thread_id: str, limit: int) -> tuple[boo
     return True, n, limit - n
 
 
+def reset_tool_budgets(tools: list) -> None:
+    """清零一组工具的 per-thread 调用计数。被复用的单例 agent（manager / tasker_coder /
+    retriever）在每次进入（一次 invoke）前调用，使工具配额变成 per-run 而非整个 thread 累计。"""
+    for t in tools or []:
+        reset = getattr(t, "reset", None)
+        if callable(reset):
+            try:
+                reset()
+            except Exception:
+                pass
+
+
+# LLM 运行时参数（每个 agent 独立：超时 / 重试 / 思考开关）===============
+def llm_runtime_kwargs(agent: str, config: dict | None = None) -> dict:
+    """按 agent 名（如 'coder' / 'manager'）从 config 读取该 agent 的 LLM 运行时旋钮，返回可展开给 ChatOpenAI 的 kwargs。
+    读取 <agent>_timeout（秒）/ <agent>_max_retries / <agent>_reasoning。
+    reasoning=False 时注入 extra_body 关闭模型思考；stream_chunk_timeout 与 timeout 对齐（仅流式 agent 生效）。"""
+    cfg = config or {}
+    timeout = cfg.get(f"{agent}_timeout", 120)
+    kwargs: dict[str, Any] = {
+        "timeout": timeout,
+        "max_retries": int(cfg.get(f"{agent}_max_retries", 2)),
+        "stream_chunk_timeout": timeout,
+    }
+    if not bool(cfg.get(f"{agent}_reasoning", False)):
+        kwargs["extra_body"] = {"reasoning": {"enabled": False}}
+    return kwargs
+
+
 # Checkpoint 读取 ========================================================
 CHECKPOINT_DB = PROJECT_ROOT / "SessionDB" / "checkpoints.db"
 
@@ -152,22 +181,5 @@ async def compress_ckpt_messages(thread_id: str, removed_ids: list[str], summary
     ops.append(SystemMessage(content=f"{SUMMARY_MARKER}\n{summary_text}"))
     async with open_manager_agent(thread_id=thread_id) as agent:
         await agent.aupdate_state({"configurable": {"thread_id": thread_id}}, {"messages": ops})
-
-
-async def repair_orphan_tool_calls(thread_id: str) -> int:
-    """给未被回答的 tool_call 补 dummy ToolMessage，返回修复条数。"""
-    from langchain_core.messages import AIMessage, ToolMessage
-    from Agents.manager import open_manager_agent
-
-    msgs = await read_ckpt_msgs(thread_id)
-    answered = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
-    orphans = [tc["id"] for m in msgs if isinstance(m, AIMessage)
-               for tc in (m.tool_calls or []) if tc["id"] not in answered]
-    if not orphans:
-        return 0
-    dummies = [ToolMessage(content="[auto-repair] interrupted; no result.", tool_call_id=tc) for tc in orphans]
-    async with open_manager_agent(thread_id=thread_id) as agent:
-        await agent.aupdate_state({"configurable": {"thread_id": thread_id}}, {"messages": dummies})
-    return len(orphans)
 
 

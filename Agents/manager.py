@@ -17,12 +17,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
+from Tools.read import Read  # noqa: E402
 from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
 from Tools.plan import Plan  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
-from Tools.utils import is_summary_message, workspace_info  # noqa: E402
+from Tools.utils import is_summary_message, llm_runtime_kwargs, reset_tool_budgets, workspace_info  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
 from Agents.tester import dispatch_tester, dispatch_test_runner  # noqa: E402
@@ -34,7 +35,6 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as f:
     _config = yaml.safe_load(f) or {}
 
 manager_run_call_limit: int = _config.get("manager_run_call_limit", 80)
-manager_thread_call_limit: int = _config.get("manager_thread_call_limit", 500)
 manager_exit_behavior: str = _config.get("manager_exit_behavior", "end")
 manager_recursion_limit: int = int(_config.get("manager_recursion_limit", 100))
 manager_max_tokens: int = int(_config.get("manager_max_tokens", 4096))
@@ -49,6 +49,7 @@ llm = ChatOpenAI(
     base_url=os.getenv("agent_llm_base_url"),
     max_tokens=manager_max_tokens,
     temperature=os.getenv("agent_llm_temperature", 0.7),
+    **llm_runtime_kwargs("manager", _config),
 )
 
 
@@ -58,6 +59,7 @@ llm = ChatOpenAI(
 _MANAGER_TOOLS = [
     SkillLibrary(),
     SafeShell(),
+    Read(),
     RepoMap(),
     Grep(),
     Glob(),
@@ -74,7 +76,6 @@ _MANAGER_TOOLS = [
 _MANAGER_MIDDLEWARE = [
     ModelCallLimitMiddleware(
         run_limit=manager_run_call_limit,
-        thread_limit=manager_thread_call_limit,
         exit_behavior=manager_exit_behavior,
     ),
 ]
@@ -155,8 +156,22 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
             except Exception:
                 pass
 
+        async def _repair_orphans(merged_config: dict) -> None:
+            from langchain_core.messages import AIMessage, ToolMessage
+            snap = await agent.aget_state(merged_config)
+            msgs = list((snap.values or {}).get("messages") or [])
+            answered = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
+            orphans = [tc["id"] for m in msgs if isinstance(m, AIMessage)
+                       for tc in (m.tool_calls or []) if tc["id"] not in answered]
+            if orphans:
+                dummies = [ToolMessage(content="[auto-repair] 上一轮被中断，该工具未产出结果。", tool_call_id=tc)
+                           for tc in orphans]
+                await agent.aupdate_state(merged_config, {"messages": dummies})
+
         async def _ainvoke(message: str, *, extra_config: Optional[dict] = None) -> dict:
+            reset_tool_budgets(_MANAGER_TOOLS)  # 工具配额按"每轮用户消息"重置，不跨整个 thread 累计
             merged_config = _merged_config(extra_config)
+            await _repair_orphans(merged_config)
             last = await _state_active_count(merged_config)
             result: dict = {}
             async for event in agent.astream_events(
@@ -178,7 +193,9 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
 
         async def _astream(message: str, *, extra_config: Optional[dict] = None) -> AsyncIterator[Tuple[str, Any]]:
             """流式产出归一化事件 (name, payload)：token / tool_start / tool_end。"""
+            reset_tool_budgets(_MANAGER_TOOLS)  # 工具配额按"每轮用户消息"重置，不跨整个 thread 累计
             merged_config = _merged_config(extra_config)
+            await _repair_orphans(merged_config)
             last = await _state_active_count(merged_config)
             try:
                 async for event in agent.astream_events(

@@ -96,7 +96,7 @@ services:
       start_period: 20s
 
   milvus:
-    image: milvusdb/milvus:v2.4.10
+    image: milvusdb/milvus:v2.5.11
     container_name: agents-milvus
     restart: unless-stopped
     command: ["milvus", "run", "standalone"]
