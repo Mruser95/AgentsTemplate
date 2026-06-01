@@ -125,6 +125,18 @@ def llm_runtime_kwargs(agent: str, config: dict | None = None) -> dict:
     return kwargs
 
 
+# 子代理 checkpoint 持久化开关（调试用）=================================
+def subagent_checkpointer(config: dict | None = None):
+    """子代理（coder/tasker/tester/retriever/checker）是否把自身 state 落盘到共享 checkpoints.db。
+    返回值直接喂给 create_agent(checkpointer=...)：
+      - False（默认）：命中 LangGraph run 路径里 `if self.checkpointer is False` 短路，不继承 manager
+        的 saver、不写嵌套 checkpoint（生产/干净行为）。
+      - None（config.subagent_persist_checkpoint=true）：回到框架默认继承——子代理跑在 manager 工具内
+        时会捡起父 config 的 saver 把全量 state 逐步写盘（写放大，**仅调试**：想在 DB 里回看子代理轨迹时开）。"""
+    cfg = config or {}
+    return None if bool(cfg.get("subagent_persist_checkpoint", False)) else False
+
+
 # Checkpoint 读取 ========================================================
 CHECKPOINT_DB = PROJECT_ROOT / "SessionDB" / "checkpoints.db"
 

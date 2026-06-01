@@ -2,8 +2,8 @@ from contextvars import ContextVar
 from typing import Any, Awaitable, Callable, Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import HumanMessage
+from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from openai import LengthFinishReasonError
 from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
@@ -23,7 +23,7 @@ from Tools.edit import Edit
 from Tools.read import Read
 from Tools.overview import Glob, Grep, RepoMap
 from Tools.linter import LintOutcome, alint_paths, lint_paths
-from Tools.utils import current_thread_id, llm_runtime_kwargs, workspace_dir
+from Tools.utils import current_thread_id, llm_runtime_kwargs, subagent_checkpointer, workspace_dir
 from agents_prompt import coder_prompt
 
 # 事件流回调（供 Tasker_coder 等下游 agent 复用） 
@@ -158,7 +158,54 @@ class CoderReport(BaseModel):
 
 _TASK_PROMPT_SEPARATOR = "\n\n---\n\n"
 
+
+class _BudgetReminder(AgentMiddleware):
+
+    def __init__(self, *, run_limit: int) -> None:
+        super().__init__()
+        self.run_limit = int(run_limit)
+
+    def wrap_model_call(self, request, handler):  # type: ignore[override]
+        return handler(self._with_reminder(request))
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[override]
+        return await handler(self._with_reminder(request))
+
+    def _with_reminder(self, request):
+        text = self._reminder_text(request.state)
+        if not text:
+            return request
+        base = request.system_message.text if request.system_message else ""
+        return request.override(system_message=SystemMessage(content=base + text))
+
+    def _reminder_text(self, state) -> str:
+        if self.run_limit <= 0:
+            return ""
+        used = int(state.get("run_model_call_count", 0))
+        current = used + 1
+        after = self.run_limit - current
+        if after <= 0:
+            return (
+                f"\n\n[调用预算] 第 {self.run_limit}/{self.run_limit} 次——"
+                "这是本次执行的**最后一次** LLM 调用：禁止再调用任何工具，"
+                "立刻基于现有信息直接产出 CoderReport；代码 / 验证未完成的部分把 "
+                "status 标成 DONE_WITH_CONCERNS，并在 open_issues 写清楚未完成项与建议。"
+            )
+        if after <= 2:
+            return (
+                f"\n\n[调用预算] 第 {current}/{self.run_limit} 次，本次之后只剩 {after} 次——"
+                "**必须开始收尾**：先把代码落地、关键验证跑完，并预留至少一次调用直接产出 "
+                "CoderReport（结构化输出本身也要占用一次调用，别拖到被强制截断）。"
+                "不要再启动新的探索性工作。"
+            )
+        return (
+            f"\n\n[调用预算] 第 {current}/{self.run_limit} 次 LLM 调用，本次之后还剩 {after} 次。"
+            "请按剩余预算规划进度，临近上限主动收尾产出 CoderReport，别等被强制截断。"
+        )
+
+
 def build_coder_agent(task_specific_prompt: str = "", *, run_limit: int | None = None):
+    effective_run_limit = coder_run_call_limit if run_limit is None else int(run_limit)
     system_prompt = (
         coder_prompt + _TASK_PROMPT_SEPARATOR + task_specific_prompt
         if task_specific_prompt.strip()
@@ -169,9 +216,11 @@ def build_coder_agent(task_specific_prompt: str = "", *, run_limit: int | None =
         tools=[SkillLibrary(), SafeShell(), Read(), Edit(), RepoMap(), Grep(), Glob(), TavilySearch()],
         system_prompt=system_prompt,
         response_format=CoderReport,
+        checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
         middleware=[
+            _BudgetReminder(run_limit=effective_run_limit),
             ModelCallLimitMiddleware(
-                run_limit=coder_run_call_limit if run_limit is None else int(run_limit),
+                run_limit=effective_run_limit,
                 exit_behavior=coder_exit_behavior,
             ),
         ],
@@ -260,6 +309,45 @@ def _missing_structured_response_report() -> CoderReport:
     )
 
 
+_SALVAGE_INSTRUCTION = (
+    "以上是一个 coder 子代理的完整执行轨迹——它因为调用预算耗尽或输出被截断，"
+    "没来得及产出结构化报告。请**严格基于轨迹里已经发生的事实**，把这次执行归纳成一份 "
+    "CoderReport：已创建 / 修改的文件、真实跑过的验证命令与输出都要如实填写；"
+    "verification 只写真正执行过的命令与输出，没跑过的留空并把 status 降级为 "
+    "DONE_WITH_CONCERNS；若确实几乎没有有效产出，status 填 BLOCKED。"
+)
+
+
+def _salvage_messages(messages: list) -> list | None:
+    """预算耗尽 / 截断没走完结构化输出时，用现有对话历史拼出补救调用的输入；
+    若轨迹里没有任何实际产出（无 AI / Tool 消息）则返回 None，交回上层走 BLOCKED。"""
+    if not any(isinstance(m, (AIMessage, ToolMessage)) for m in messages):
+        return None
+    return list(messages) + [HumanMessage(content=_SALVAGE_INSTRUCTION)]
+
+
+def _salvage_report(messages: list) -> CoderReport | None:
+    payload = _salvage_messages(messages)
+    if payload is None:
+        return None
+    try:  # 这次结构化调用直接打 llm，不经过带预算中间件的 agent，所以不受调用上限约束
+        report = llm.with_structured_output(CoderReport).invoke(payload)
+    except Exception:
+        return None
+    return report if isinstance(report, CoderReport) else None
+
+
+async def _asalvage_report(messages: list) -> CoderReport | None:
+    payload = _salvage_messages(messages)
+    if payload is None:
+        return None
+    try:  # 同 _salvage_report，但走异步且不阻塞事件循环
+        report = await llm.with_structured_output(CoderReport).ainvoke(payload)
+    except Exception:
+        return None
+    return report if isinstance(report, CoderReport) else None
+
+
 def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | None = None,) -> CoderReport:
     limit = coder_lint_max_retries if max_retries is None else max_retries
     messages: list = [HumanMessage(content=user_content)]
@@ -273,7 +361,9 @@ def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | N
             return _missing_structured_response_report()
         report = state.get("structured_response")
         if not isinstance(report, CoderReport):
-            return _missing_structured_response_report()
+            report = _salvage_report(state.get("messages") or [])  # 预算耗尽没走完结构化输出时，补一次救回成果，再走同一道 lint gate
+            if not isinstance(report, CoderReport):
+                return _missing_structured_response_report()
 
         outcome = lint_paths(_changed_source_files(report))
         if outcome.passed:
@@ -324,7 +414,9 @@ async def ainvoke_with_lint_gate(
         state = await astream_collect_final_state(agent, messages, on_event=on_event)
         report = state.get("structured_response")
         if not isinstance(report, CoderReport):
-            return _missing_structured_response_report()
+            report = await _asalvage_report(state.get("messages") or [])  # 预算耗尽没走完结构化输出时，补一次救回成果，再走同一道 lint gate
+            if not isinstance(report, CoderReport):
+                return _missing_structured_response_report()
 
         # _changed_source_files 现在只是路径计算，但保持 to_thread 习惯避免阻塞 loop
         paths = await asyncio.to_thread(_changed_source_files, report)

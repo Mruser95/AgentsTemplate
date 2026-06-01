@@ -2,7 +2,7 @@ from typing import Any, Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
@@ -22,7 +22,7 @@ from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
-from Tools.utils import current_thread_id, ensure_workspace, llm_runtime_kwargs  # noqa: E402
+from Tools.utils import current_thread_id, ensure_workspace, llm_runtime_kwargs, subagent_checkpointer  # noqa: E402
 from agents_prompt import tester_prompt, runner_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -33,6 +33,7 @@ llm = ChatOpenAI(
     model=os.getenv("code_llm_model"),
     api_key=os.getenv("code_llm_key"),
     base_url=os.getenv("code_llm_base_url"),
+    disable_streaming=not bool(_CFG.get("subagent_stream_output", False)),
     **llm_runtime_kwargs("tester", _CFG),
 )
 
@@ -43,7 +44,27 @@ TestCaseCategory = Literal["happy_path", "edge_case", "boundary", "error_input",
 
 
 class TestCase(BaseModel):
-    model_config = {"extra": "forbid"}
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "oneOf": [
+                {
+                    "description": "有精确答案：expected_output 非 null，judgment_criteria 必须为空串。",
+                    "properties": {
+                        "expected_output": {"not": {"type": "null"}},
+                        "judgment_criteria": {"const": ""},
+                    },
+                },
+                {
+                    "description": "无精确答案：expected_output 为 null，judgment_criteria 必须有非空白字符。",
+                    "properties": {
+                        "expected_output": {"type": "null"},
+                        "judgment_criteria": {"pattern": r".*\S.*"},
+                    },
+                },
+            ]
+        },
+    }
 
     name: str = Field(description=(
         "简短蛇形命名，描述被测行为而非序号，例如 'happy_path_perfect_square' / 'error_input_negative'。"
@@ -98,7 +119,34 @@ FailureKind = Literal[
 
 
 class TestCaseResult(BaseModel):
-    model_config = {"extra": "forbid"}
+    model_config = {
+        "extra": "forbid",
+        "json_schema_extra": {
+            "allOf": [
+                {
+                    "if": {"properties": {"passed": {"const": True}}, "required": ["passed"]},
+                    "then": {
+                        "description": "passed=True 时 failure_kind 必须为 null，failure_reason 必须为空串。",
+                        "properties": {
+                            "failure_kind": {"type": "null"},
+                            "failure_reason": {"const": ""},
+                        },
+                    },
+                    "else": {
+                        "description": "passed=False 时 failure_kind 必填，failure_reason 必须有非空白字符。",
+                        "properties": {
+                            "failure_kind": {"not": {"type": "null"}},
+                            "failure_reason": {"pattern": r".*\S.*"},
+                        },
+                    },
+                },
+                {
+                    "description": "evidence 必须有非空白字符。",
+                    "properties": {"evidence": {"pattern": r".*\S.*"}},
+                },
+            ]
+        },
+    }
     name: str = Field(description="对应 TestDataset 中的 case.name，必须能在数据集中找到。")
     category: TestCaseCategory = Field(description="原 case 的分类，原样回填。")
     passed: bool = Field(description="本条用例是否通过。")
@@ -196,6 +244,7 @@ def _build_agent(prompt: str, schema: type[BaseModel], task_prompt: str, prefix:
         tools=[SkillLibrary(), SafeShell(), Read(), TavilySearch()],
         system_prompt=sp,
         response_format=schema,
+        checkpointer=subagent_checkpointer(_CFG),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
         middleware=[ModelCallLimitMiddleware(
             run_limit=_CFG.get(f"{prefix}_run_call_limit", 30),
             exit_behavior=_CFG.get(f"{prefix}_exit_behavior", "end"),
@@ -203,13 +252,66 @@ def _build_agent(prompt: str, schema: type[BaseModel], task_prompt: str, prefix:
     )
 
 
-def _structured(state: dict, schema: type[BaseModel], prefix: str) -> BaseModel:
+# 结构化结果解析 / 失败补救（仿 coder：缺结构化时补救一次，仍失败则回带解释的失败报告交 manager 决策，不抛异常）
+_SALVAGE_INSTRUCTION = (
+    "以上是一个子代理的完整执行轨迹——它因为流式分片把工具调用 JSON 拼坏、调用预算耗尽或被截断，"
+    "没来得及产出结构化结果。请**严格基于轨迹里已发生的事实**，把它重新归纳成一份合法的 {name}："
+    "只填轨迹中真实出现过的内容，不要臆造。"
+)
+
+
+def _structured(state: dict, schema: type[BaseModel]) -> Optional[BaseModel]:
     out = state.get("structured_response")
-    if not isinstance(out, schema):
-        raise RuntimeError(
-            f"{prefix} agent 未返回合法 {schema.__name__} 结构化响应（got {type(out).__name__}）。"
-        )
-    return out
+    return out if isinstance(out, schema) else None
+
+
+def _salvage_input(messages: list, schema: type[BaseModel]) -> Optional[list]:
+    """用现有对话历史拼出补救调用输入；轨迹里没有任何实际产出（无 AI / Tool 消息）时返回 None。"""
+    if not any(isinstance(m, (AIMessage, ToolMessage)) for m in messages):
+        return None
+    return list(messages) + [HumanMessage(content=_SALVAGE_INSTRUCTION.format(name=schema.__name__))]
+
+
+def _salvage(messages: list, schema: type[BaseModel]) -> Optional[BaseModel]:
+    payload = _salvage_input(messages, schema)
+    if payload is None:
+        return None
+    try:  # 直接打 llm（不经带预算中间件的 agent，故不受调用上限约束）
+        out = llm.with_structured_output(schema).invoke(payload)
+    except Exception:
+        return None
+    return out if isinstance(out, schema) else None
+
+
+async def _asalvage(messages: list, schema: type[BaseModel]) -> Optional[BaseModel]:
+    payload = _salvage_input(messages, schema)
+    if payload is None:
+        return None
+    try:  # 同 _salvage，走异步不阻塞事件循环
+        out = await llm.with_structured_output(schema).ainvoke(payload)
+    except Exception:
+        return None
+    return out if isinstance(out, schema) else None
+
+
+def _failure_report(state: dict, schema: type[BaseModel], prefix: str) -> dict:
+    """补救仍失败时的兜底：带根因解释的失败报告交 manager 决策（manager 见 status=BLOCKED 自行裁决，禁止原样重派）。"""
+    reason = f"未发现 {schema.__name__} 工具调用：可能调用预算耗尽或模型未走完结构化输出。"
+    for m in reversed(state.get("messages", []) or []):
+        for itc in getattr(m, "invalid_tool_calls", None) or []:
+            if itc.get("name") == schema.__name__:
+                a = itc.get("args") or ""
+                reason = (f"{schema.__name__} 工具调用的 arguments 是非法 JSON（多为流式分片拼接损坏）："
+                          f"len={len(a)}，head={a[:120]!r}。")
+                break
+    return {
+        "ok": False,
+        "status": "BLOCKED",
+        "agent": prefix,
+        "error": f"{prefix} 未产出合法 {schema.__name__} 结构化结果。",
+        "reason": reason,
+        "advice": "禁止原样重派：请精简 / 拆小 task_prompt，或把用例分批后再试。",
+    }
 
 
 def _make_dispatch(
@@ -226,12 +328,17 @@ def _make_dispatch(
     def _sync(**kw) -> str:
         p = kw[input_arg]; _check(p)
         state = _build_agent(prompt, schema, p, prefix).invoke({"messages": [HumanMessage(content=human)]})
-        return json.dumps(post(_structured(state, schema, prefix)), ensure_ascii=False, indent=2)
+        out = _structured(state, schema) or _salvage(state.get("messages") or [], schema)  # 缺结构化则补救一次
+        payload = post(out) if out is not None else _failure_report(state, schema, prefix)
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
     async def _async(**kw) -> str:
         p = kw[input_arg]; _check(p)
         state = await _build_agent(prompt, schema, p, prefix).ainvoke({"messages": [HumanMessage(content=human)]})
-        payload = await asyncio.to_thread(post, _structured(state, schema, prefix))
+        out = _structured(state, schema)
+        if out is None:  # 缺结构化则补救一次
+            out = await _asalvage(state.get("messages") or [], schema)
+        payload = await asyncio.to_thread(post, out) if out is not None else _failure_report(state, schema, prefix)
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
     # StructuredTool.from_function 通过函数签名推断参数；动态改名以匹配 input_arg

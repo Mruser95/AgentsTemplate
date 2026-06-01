@@ -1,7 +1,8 @@
-from typing import Literal
+from typing import Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pathlib import Path
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -17,7 +18,7 @@ from Tools.terminal import SafeShell  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
-from Tools.utils import llm_runtime_kwargs  # noqa: E402
+from Tools.utils import llm_runtime_kwargs, subagent_checkpointer  # noqa: E402
 from agents_prompt import checker_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -31,9 +32,9 @@ checker_max_tokens: int = int(_config.get("checker_max_tokens", 2048))
 
 
 llm = ChatOpenAI(
-    model=os.getenv("agent_llm_model"),
-    api_key=os.getenv("agent_llm_key"),
-    base_url=os.getenv("agent_llm_base_url"),
+    model=os.getenv("small_llm_model"),
+    api_key=os.getenv("small_llm_key"),
+    base_url=os.getenv("small_llm_base_url"),
     max_tokens=checker_max_tokens,
     **llm_runtime_kwargs("checker", _config),
 )
@@ -116,6 +117,7 @@ def build_checker_agent():
         tools=[SkillLibrary(), SafeShell(), Read(), RepoMap(), Grep(), Glob()],
         system_prompt=checker_prompt,
         response_format=CheckerReport,
+        checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
         middleware=[
             ModelCallLimitMiddleware(
                 run_limit=checker_run_call_limit,
@@ -125,6 +127,46 @@ def build_checker_agent():
     )
 
 checker_agent = build_checker_agent()
+
+
+# 结构化补救（仿 tester）：主跑因把预算耗在旁白 / 被截断而没产出 CheckerReport 时，
+# 直接打 llm（绕开带预算中间件的 agent，不受调用上限约束），用 structured_output
+# 强制基于已发生轨迹补一份合法 CheckerReport；仍失败才回退 checker_failed_report()。
+_SALVAGE_INSTRUCTION = (
+    "以上是一次执行路径偏离检查的完整轨迹——它把调用预算耗在了自然语言旁白上、"
+    "或被截断，没来得及产出结构化 CheckerReport。请**严格基于轨迹里已核对到的事实**，"
+    "把它归纳成一份合法的 CheckerReport：只填轨迹中真实出现过的核对结论，不要臆造；"
+    "没落地核对过的判断一律取从严档位，并把 confidence 降到 low。"
+)
+
+
+def _salvage_input(messages: list) -> Optional[list]:
+    """用现有对话历史拼补救调用输入；轨迹里没有任何实际产出（无 AI / Tool 消息）时返回 None。"""
+    if not any(isinstance(m, (AIMessage, ToolMessage)) for m in messages):
+        return None
+    return list(messages) + [HumanMessage(content=_SALVAGE_INSTRUCTION)]
+
+
+def salvage_checker(messages: list) -> Optional[CheckerReport]:
+    payload = _salvage_input(messages)
+    if payload is None:
+        return None
+    try:
+        out = llm.with_structured_output(CheckerReport).invoke(payload)
+    except Exception:
+        return None
+    return out if isinstance(out, CheckerReport) else None
+
+
+async def asalvage_checker(messages: list) -> Optional[CheckerReport]:
+    payload = _salvage_input(messages)
+    if payload is None:
+        return None
+    try:  # 同 salvage_checker，走异步不阻塞事件循环
+        out = await llm.with_structured_output(CheckerReport).ainvoke(payload)
+    except Exception:
+        return None
+    return out if isinstance(out, CheckerReport) else None
 
 
 def checker_failed_report() -> dict:

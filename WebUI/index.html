@@ -10,7 +10,9 @@
   <!-- 认证视图 -->
   <div id="auth-view">
     <div class="auth-card">
+      <div class="auth-orb"></div>
       <h2>Agent WebUI</h2>
+      <p class="auth-sub">输入 API Key 以连接你的 Agent</p>
       <input id="api-key-input" type="password" placeholder="请输入 API Key" autocomplete="off" />
       <button id="auth-submit-btn">连接</button>
       <div id="auth-error"></div>
@@ -20,7 +22,7 @@
   <!-- 聊天视图：单线程模式（一个用户一个 thread_id） -->
   <div id="chat-view" style="display:none">
     <header id="topbar">
-      <div class="topbar-title">Agent WebUI</div>
+      <div class="topbar-title"><span class="brand-dot"></span>Agent WebUI</div>
       <div class="topbar-actions">
         <button id="files-btn" class="topbar-btn" title="查看与下载本次会话文件">文件</button>
         <button id="new-thread-btn" class="topbar-btn" title="开始一个全新的对话（清除当前上下文）">新建对话</button>

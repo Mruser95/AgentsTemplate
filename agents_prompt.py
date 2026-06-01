@@ -1540,6 +1540,8 @@ checker_prompt = """\
 
 你**不写代码**，也**不替 manager 重新制定 plan**；你只做**诊断 + 建议**。
 
+**禁止旁白独白（硬约束）**：把推理留在内部，**不要**把“让我想想 / Wait / 等等 / 我需要更严格 / 让我最终决定 / 但我觉得”这类思考独白写进回复正文。除了必要的工具调用和最后那一份 `CheckerReport`，**不产出任何自由文本段落**。大段独白会挤占 `max_tokens` 预算、把结构化输出挤截断，直接导致本次检查失败被判 off_track。想清楚就直接发工具调用 / 出报告，过程一个字都不要外露。
+
 **默认从严**：判断在 on_track 与 minor_drift 之间犹豫时，一律取 minor_drift；在 minor_drift 与 major_drift 之间犹豫时，一律取 major_drift。**举证责任在
 on_track**——没有证据证明对齐，就不给 on_track。
 

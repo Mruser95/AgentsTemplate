@@ -301,6 +301,74 @@ function copyCodeBlock(btn) {
 }
 
 /**
+ * 为已完成的 AI 气泡添加操作栏（复制整条回答 / 重新生成）。
+ * 复制按钮加到每一条 AI 气泡；重生成只加到最后一条。
+ */
+function decorateAIBubbles() {
+  var container = getMessagesContainer();
+  if (!container) return;
+  var bubbles = container.querySelectorAll('.message.ai');
+  bubbles.forEach(function (bubble, idx) {
+    var isLast = (idx === bubbles.length - 1);
+    var existing = bubble.querySelector('.msg-actions');
+    if (existing) existing.parentNode.removeChild(existing);
+    // 正在流式的气泡不加操作栏
+    if (bubble.classList.contains('streaming')) return;
+
+    var bar = document.createElement('div');
+    bar.className = 'msg-actions';
+
+    var copyBtn = document.createElement('button');
+    copyBtn.className = 'msg-action-btn';
+    copyBtn.title = '复制回答';
+    copyBtn.innerHTML = _iconCopy() + '<span>复制</span>';
+    copyBtn.addEventListener('click', function () { copyAnswer(bubble, copyBtn); });
+    bar.appendChild(copyBtn);
+
+    if (isLast && typeof regenerateLast === 'function') {
+      var regenBtn = document.createElement('button');
+      regenBtn.className = 'msg-action-btn';
+      regenBtn.title = '重新生成';
+      regenBtn.innerHTML = _iconRegen() + '<span>重新生成</span>';
+      regenBtn.addEventListener('click', function () { regenerateLast(); });
+      bar.appendChild(regenBtn);
+    }
+
+    bubble.appendChild(bar);
+  });
+}
+
+function _iconCopy() {
+  return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2.5"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>';
+}
+function _iconRegen() {
+  return '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>';
+}
+
+/**
+ * 复制整条 AI 回答（优先用 data-raw 原始 Markdown）
+ */
+function copyAnswer(bubble, btn) {
+  var text = bubble.getAttribute('data-raw') || bubble.textContent || '';
+  var done = function () {
+    if (!btn) return;
+    var span = btn.querySelector('span');
+    var orig = span ? span.textContent : '';
+    btn.classList.add('copied');
+    if (span) span.textContent = '已复制';
+    setTimeout(function () {
+      btn.classList.remove('copied');
+      if (span) span.textContent = orig;
+    }, 1800);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(done);
+  } else {
+    done();
+  }
+}
+
+/**
  * 添加用户消息气泡（右对齐）
  */
 function appendUserMessage(content) {
@@ -358,15 +426,15 @@ function _getOrCreateToolGroup() {
 
   var group = document.createElement('details');
   group.className = 'tool-group';
-  // 默认折叠，保持一条消息条大小
-  group.open = false;
+  // 运行中默认展开，让用户看到 agent 正在做什么；全部完成后自动收起
+  group.open = true;
 
   var summary = document.createElement('summary');
   summary.className = 'tool-group-summary';
 
   var title = document.createElement('span');
   title.className = 'tool-group-title';
-  title.textContent = '工具调用';
+  title.textContent = '调用工具';
 
   var count = document.createElement('span');
   count.className = 'tool-group-count';
@@ -400,20 +468,44 @@ function _updateToolGroupHeader(group) {
   var items = body ? body.querySelectorAll('.tool-indicator') : [];
   var total = items.length;
   var running = 0;
+  var names = [];
   for (var i = 0; i < items.length; i++) {
     var s = items[i].querySelector('.tool-status');
     if (s && s.classList.contains('running')) running++;
+    var n = items[i].querySelector('.tool-name');
+    if (n && names.indexOf(n.textContent) === -1) names.push(n.textContent);
   }
   var countEl = group.querySelector('.tool-group-count');
   if (countEl) countEl.textContent = String(total);
+
+  // 标题直接显示工具名（多个时“首个 +N”），一眼可见 agent 在干什么
+  var titleEl = group.querySelector('.tool-group-title');
+  if (titleEl) {
+    if (names.length === 0) {
+      titleEl.textContent = '调用工具';
+    } else if (names.length === 1) {
+      titleEl.textContent = names[0];
+    } else {
+      titleEl.textContent = names[0] + '  +' + (names.length - 1);
+    }
+  }
+
   var statusEl = group.querySelector('.tool-group-status');
   if (!statusEl) return;
   if (running > 0) {
     statusEl.className = 'tool-group-status running';
     statusEl.textContent = running + ' 运行中…';
+    group.removeAttribute('data-autocollapse');
   } else {
     statusEl.className = 'tool-group-status done';
     statusEl.textContent = total > 0 ? '全部完成' : '';
+    // 全部完成：短暂停顿后自动收起，保持会话清爽（仅自动收一次，不干扰用户手动展开）
+    if (total > 0 && !group.hasAttribute('data-autocollapse')) {
+      group.setAttribute('data-autocollapse', '1');
+      setTimeout(function () {
+        if (group.getAttribute('data-autocollapse') === '1') group.open = false;
+      }, 1100);
+    }
   }
 }
 
@@ -566,5 +658,6 @@ function renderHistory(messages) {
     // 其他类型（system 等）忽略
   }
   scrollToBottom();
+  if (typeof decorateAIBubbles === 'function') decorateAIBubbles();
   _persistMessagesHTML();
 }

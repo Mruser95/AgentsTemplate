@@ -132,6 +132,8 @@ async function loadThreadHistory() {
       _deferScrollToBottom();
     } else if (typeof restoreCachedMessages === 'function' && restoreCachedMessages()) {
       // 服务端尚无 checkpoint（生成中刷新），从 sessionStorage 缓存恢复
+      // 缓存的 HTML 不带事件监听，重新绑定操作栏
+      if (typeof decorateAIBubbles === 'function') decorateAIBubbles();
       _deferScrollToBottom();
     } else {
       renderEmptyState();
@@ -153,11 +155,31 @@ function renderEmptyState() {
   var container = document.getElementById('messages');
   if (!container) return;
   if (container.querySelector('.empty-state')) return;
+
+  var examples = [
+    { icon: '💻', title: '写一段代码', text: '用 Python 写一个带重试的 HTTP 下载函数，并加上注释' },
+    { icon: '🔍', title: '检索知识库', text: '在知识库里查一下项目的部署流程' },
+    { icon: '🧩', title: '拆解任务', text: '帮我把“做一个待办事项 Web 应用”拆成可执行的开发计划' },
+    { icon: '📐', title: '解释原理', text: '用通俗的话解释一下快速排序的时间复杂度' }
+  ];
+
+  var cards = examples.map(function (e) {
+    return '<button class="example-card" onclick="useExample(' +
+      "'" + e.text.replace(/'/g, "\\'") + "'" + ')">' +
+      '<span class="example-icon">' + e.icon + '</span>' +
+      '<span class="example-text">' +
+        '<span class="example-title">' + e.title + '</span>' +
+        '<span class="example-sub">' + e.text + '</span>' +
+      '</span></button>';
+  }).join('');
+
   var wrap = document.createElement('div');
   wrap.className = 'empty-state';
   wrap.innerHTML =
-    '<div class="empty-title">开始对话</div>' +
-    '<div class="empty-hint">在下方输入消息，开始与 Agent 对话</div>';
+    '<div class="empty-orb"></div>' +
+    '<div class="empty-title">有什么可以帮你？</div>' +
+    '<div class="empty-hint">我可以检索知识库、调用工具、写并运行代码。从下面的示例开始，或直接输入你的问题。</div>' +
+    '<div class="example-grid">' + cards + '</div>';
   container.appendChild(wrap);
 }
 

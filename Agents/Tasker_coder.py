@@ -31,7 +31,7 @@ from Agents.coder import (  # noqa: E402
     invoke_with_lint_gate,
     on_event_var,
 )
-from Tools.utils import bump_budget, current_thread_id, llm_runtime_kwargs, reset_tool_budgets, workspace_info  # noqa: E402
+from Tools.utils import bump_budget, current_thread_id, llm_runtime_kwargs, reset_tool_budgets, subagent_checkpointer, workspace_info  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
@@ -316,6 +316,7 @@ tasker_coder_agent = create_agent(
     tools=_TASKER_TOOLS,
     system_prompt=tasker_coder_prompt,
     response_format=TaskerReport,
+    checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
     middleware=[
         ModelCallLimitMiddleware(
             run_limit=tasker_run_call_limit,

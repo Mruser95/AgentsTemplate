@@ -18,7 +18,7 @@ from Memory.longMem import search_long_memory  # noqa: E402
 from Memory.shortMem import search_short_memory  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.browser import Browser  # noqa: E402
-from Tools.utils import llm_runtime_kwargs, reset_tool_budgets  # noqa: E402
+from Tools.utils import llm_runtime_kwargs, reset_tool_budgets, subagent_checkpointer  # noqa: E402
 from Knowledge.retriever import KnowledgeSearch  # noqa: E402
 from agents_prompt import retriever_prompt  # noqa: E402
 
@@ -99,6 +99,7 @@ retriever_agent = create_agent(
     tools=_RETRIEVER_TOOLS,
     system_prompt=retriever_prompt,
     response_format=RetrievalReport,
+    checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
     middleware=[
         ModelCallLimitMiddleware(
             run_limit=retriever_run_call_limit,

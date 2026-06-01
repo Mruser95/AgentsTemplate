@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Agents.checker import checker_agent, CheckerReport, checker_failed_report  # noqa: E402
+from Agents.checker import checker_agent, CheckerReport, checker_failed_report, salvage_checker, asalvage_checker  # noqa: E402
 from Tools.utils import current_thread_id  # noqa: E402
 
 
@@ -130,6 +130,8 @@ def _run_checker_sync(messages: list, plan: dict) -> dict:
     user_content = _build_checker_user_content(plan, messages)
     state = checker_agent.invoke({"messages": [HumanMessage(content=user_content)]})
     report = state.get("structured_response")
+    if not isinstance(report, CheckerReport):  # 缺结构化 -> 最后一次强制补救（仿 tester）
+        report = salvage_checker(state.get("messages") or [])
     if not isinstance(report, CheckerReport):
         return checker_failed_report()
     return report.model_dump()
@@ -141,6 +143,8 @@ async def _run_checker_async(messages: list, plan: dict) -> dict:
         {"messages": [HumanMessage(content=user_content)]}
     )
     report = state.get("structured_response")
+    if not isinstance(report, CheckerReport):  # 缺结构化 -> 最后一次强制补救（仿 tester）
+        report = await asalvage_checker(state.get("messages") or [])
     if not isinstance(report, CheckerReport):
         return checker_failed_report()
     return report.model_dump()

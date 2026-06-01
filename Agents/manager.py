@@ -38,6 +38,7 @@ manager_run_call_limit: int = _config.get("manager_run_call_limit", 80)
 manager_exit_behavior: str = _config.get("manager_exit_behavior", "end")
 manager_recursion_limit: int = int(_config.get("manager_recursion_limit", 100))
 manager_max_tokens: int = int(_config.get("manager_max_tokens", 4096))
+subagent_stream_output: bool = bool(_config.get("subagent_stream_output", False))  # 调试开关：是否把子代理内部 token/工具事件也流式外发（默认 false=只流 manager 自身）
 
 
 CHECKPOINT_DB = PROJECT_ROOT / "SessionDB" / "checkpoints.db"
@@ -204,6 +205,8 @@ async def manager_session(thread_id: str) -> AsyncIterator[ManagerSession]:
                     version="v2",
                 ):
                     name, data = event.get("event"), event.get("data") or {}
+                    if not subagent_stream_output and "|" in ((event.get("metadata") or {}).get("langgraph_checkpoint_ns") or ""):
+                        continue  # 子代理内部事件：checkpoint_ns 含 NS_SEP '|'（即嵌套≥2 层）默认不外流；置 subagent_stream_output=true 放行
                     if name == "on_chat_model_stream":
                         text = getattr(data.get("chunk"), "content", "")
                         if isinstance(text, str) and text:

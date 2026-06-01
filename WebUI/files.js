@@ -114,8 +114,8 @@ function _createFileItem(file, threadId, index) {
   item.innerHTML =
     '<span class="file-icon">' + _fileIcon(file.name) + '</span>' +
     '<div class="file-info">' +
-      '<div class="file-name">' + _escapeHtml(file.name) + sourceBadge + '</div>' +
-      '<div class="file-meta">' + _formatSize(file.size) + ' · ' + _escapeHtml(file.path) + '</div>' +
+      '<div class="file-name">' + _escapeHtml(file.name) + '</div>' +
+      '<div class="file-meta">' + sourceBadge + _formatSize(file.size) + ' · ' + _escapeHtml(file.path) + '</div>' +
     '</div>' +
     '<button class="file-dl-btn">下载</button>';
 
@@ -164,7 +164,11 @@ function _downloadFile(threadId, path, filename, btn) {
     .catch(function (e) {
       btn.textContent = origText;
       btn.disabled = false;
-      alert('下载失败: ' + e.message);
+      if (typeof showErrorBanner === 'function') {
+        showErrorBanner('下载失败：' + e.message);
+      } else {
+        alert('下载失败: ' + e.message);
+      }
     });
 }
 
