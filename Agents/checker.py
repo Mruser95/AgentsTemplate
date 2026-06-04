@@ -2,10 +2,11 @@ from typing import Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, get_buffer_string
 from pathlib import Path
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+import json
 import os
 import sys
 import yaml
@@ -111,11 +112,19 @@ class CheckerReport(BaseModel):
     confidence: Confidence = Field(description="本次评估的置信度。")
 
 
-def build_checker_agent():
+def _plan_inject_text(plan: dict) -> str:
+    return (
+        "## 当前 plan.json（权威 · 必须遵守）\n\n"
+        f"```json\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n```"
+    )
+
+
+def build_checker_agent(plan: dict):
+    system_prompt = f"{checker_prompt}\n\n---\n\n{_plan_inject_text(plan)}"
     return create_agent(
         model=llm,
         tools=[SkillLibrary(), SafeShell(), Read(), RepoMap(), Grep(), Glob()],
-        system_prompt=checker_prompt,
+        system_prompt=system_prompt,
         response_format=CheckerReport,
         checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
         middleware=[
@@ -126,7 +135,38 @@ def build_checker_agent():
         ],
     )
 
-checker_agent = build_checker_agent()
+
+def _build_user_content(messages: list) -> str:
+    transcript = get_buffer_string(messages or [])
+    return (
+        "=== MESSAGES TRANSCRIPT ===\n"
+        f"{transcript}\n\n"
+        "请基于 system 中的 plan 与以上 transcript 评估偏离情况，以 CheckerReport 结构化 JSON 输出。"
+    )
+
+
+def run_checker(messages: list, plan: dict) -> dict:
+    state = build_checker_agent(plan).invoke(
+        {"messages": [HumanMessage(content=_build_user_content(messages))]}
+    )
+    report = state.get("structured_response")
+    if not isinstance(report, CheckerReport):
+        report = salvage_checker(state.get("messages") or [])
+    if not isinstance(report, CheckerReport):
+        return checker_failed_report()
+    return report.model_dump()
+
+
+async def arun_checker(messages: list, plan: dict) -> dict:
+    state = await build_checker_agent(plan).ainvoke(
+        {"messages": [HumanMessage(content=_build_user_content(messages))]}
+    )
+    report = state.get("structured_response")
+    if not isinstance(report, CheckerReport):
+        report = await asalvage_checker(state.get("messages") or [])
+    if not isinstance(report, CheckerReport):
+        return checker_failed_report()
+    return report.model_dump()
 
 
 # 结构化补救（仿 tester）：主跑因把预算耗在旁白 / 被截断而没产出 CheckerReport 时，

@@ -37,7 +37,7 @@ description: shell 命令执行的安全约束与使用策略
 ### 第一步：先探查，再操作
 ```bash
 # ✅ 先确认环境
-ls / 
+ls /
 python --version
 
 # ❌ 不要上来就写文件、安装依赖
@@ -86,14 +86,63 @@ cd /project && python main.py
 ## ✅ 典型工作流示例
 
 **任务：检查项目依赖并运行测试**
-
 ```
 1. ls /project               # 确认目录结构
 2. cat requirements.txt      # 读取依赖列表（不执行安装）
 3. python -m pytest tests/   # 运行测试
 ```
-
 不要跳过第 1、2 步直接执行第 3 步。
+
+**任务：定位源码中的符号**
+```
+1. grep -rn "class Manager" Agents/    # 或用 overview 工具的 grep
+2. sed -n '1,50p' Agents/manager.py    # 只看头部
+3. python -m py_compile Agents/manager.py  # 改完后验证
+```
+
+**任务：验证 ingest 文件格式**
+```
+1. ls Knowledge/chunks/
+2. head -3 Knowledge/chunks/spec.json
+3. python -c "import json; print(len(json.load(open('Knowledge/chunks/spec.json'))))"
+```
+
+---
+
+## 📌 与其他工具的协作
+
+| 场景 | 优先工具 | terminal 的角色 |
+|---|---|---|
+| 找符号 / 文件名 | `grep` / `glob` / `repo_map` | 仅在 overview 工具不够时用 |
+| 写 / 改文件 | `edit` | terminal 只用于 `cat`/`sed -n` 定位，不用重定向写文件 |
+| 公开资讯 | `tavily_search` | terminal 的 curl 仅在白名单内且需原始响应时用 |
+| 内部文档 | `knowledge_search` | terminal 用于查看 chunk 文件、验证 ingest |
+| 浏览器下载 | `browser` | 下载文件优先 terminal `curl`（白名单内） |
+
+---
+
+## ❌ 反模式
+
+| 反模式 | 改用 |
+|---|---|
+| `cat > file.py << EOF` 写文件 | `edit(mode='create')` |
+| `sed -i` 改文件 | `edit(mode='str_replace')` |
+| 5 条独立命令拼成一条管道 | 拆分执行，便于定位错误 |
+| 次数快用完还继续探索 | remaining ≤ 2 时停手 |
+| 白名单被拒后换编码绕过 | 告知用户，换方案 |
+| overview 能做的事用 terminal rg | 用 `grep`/`glob`/`repo_map` |
+
+---
+
+## 💡 常见命令场景
+
+| 目的 | 示例 | 注意 |
+|---|---|---|
+| 看文件片段 | `sed -n '10,30p' file.py` | 定位用，不改文件 |
+| 语法检查 | `python -m py_compile file.py` | edit 后必做 |
+| 跑测试 | `python -m pytest tests/ -x` | `-x` 遇错即停 |
+| 看 chunk 格式 | `head -3 Knowledge/chunks/x.json` | ingest 前验证 |
+| 查包版本 | `pip show langchain` | 确认依赖，非安装 |
 
 ---
 

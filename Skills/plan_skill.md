@@ -11,19 +11,7 @@ description: 读写 SessionDB/<thread_id>/plan.json；update_subtask_status='don
 最关键的特性：**`update_subtask_status` 当 `new_status='done'` 时，工具会同步触发 `checker_agent` 做对齐检查，并把完整的 `CheckerReport` 嵌入返回值**。这是 hard gate —— manager **绕不过**这次检查，必须读完报告再决定下一步。
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ manager 调 plan(action='update_subtask_status',         │
-│                    subtask_id='m1-t1', new_status='done')   │
-│                          │                                   │
-│                          ▼                                   │
-│   工具：写 plan.json（subtask 状态置 done）                  │
-│                          │                                   │
-│                          ▼                                   │
-│   工具：自动调 checker_agent.invoke(plan + transcript)       │
-│                          │                                   │
-│                          ▼                                   │
-│   返回值 = CheckerReport JSON + "下一步必须做的（铁律）"     │
-└──────────────────────────────────────────────────────────────┘
+manager: update_subtask_status(done) → 写 plan.json → checker_agent.invoke → 返回 CheckerReport +「下一步铁律」
 ```
 
 ---
@@ -132,22 +120,32 @@ result_summary=新增 Tools/csv_exporter.py，3 条边界测试通过
 { ...CheckerReport JSON... }
 
 === 你下一步必须做的（铁律） ===
-* on_track / minor_drift  → ...
-* major_drift / off_track → ...
+* on_track / minor_drift  → 继续下一 subtask
+* major_drift / off_track   → 先纠偏，不得硬推进
 ```
 
-### 4) 完成一个 milestone
+### 4) 完成 milestone → 整个 plan
 ```
-action=set_milestone_status
-milestone_id=m1
-new_status=done
+action=set_milestone_status, milestone_id=m1, new_status=done
+action=set_plan_status, new_status=done
 ```
 
-### 5) 整个 plan 完成
-```
-action=set_plan_status
-new_status=done
-```
+---
+
+## ❌ 反模式
+
+| 反模式 | 后果 | 改用 |
+|---|---|---|
+| terminal 直接改 plan.json | 绕过 checker / 字段损坏 | 只走 plan 工具 |
+| done 后忽略 CheckerReport | major_drift 被掩盖 | 必读报告再推进 |
+| write 时不 read 现状 | 漏字段 / 覆盖 milestones | 先 read 再 write |
+| subtask 没 verification 就 dispatch | 无法验收 | 写清可验证标准 |
+
+---
+
+## 💡 dispatch_to 选用
+
+`tasker_coder` 写代码改文件；`tester` 独立验证；`retriever` 检索汇总；`manager_self` manager 轻量自办；`none` 纯规划不需派子代理。
 
 ---
 

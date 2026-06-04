@@ -12,15 +12,37 @@ function getMessagesContainer() {
 
 /**
  * 自动滚动到最新消息
- * 仅当用户本来就在底部附近（≤80px）时才滚动，
- * 避免用户往上翻阅时被强制拉回底部。
+ * 跟随策略：只要用户没有主动往上翻阅（_userScrolledUp 为 false），
+ * 就始终把新内容钉在底部；用户一旦上滚则暂停跟随，
+ * 重新滚回底部（±60px）后恢复跟随。
  */
+var _userScrolledUp = false;
+
+function _bindAutoScrollTracking() {
+  var container = getMessagesContainer();
+  if (!container || container._scrollTracked) return;
+  container._scrollTracked = true;
+  container.addEventListener('scroll', function () {
+    var dist = container.scrollHeight - container.scrollTop - container.clientHeight;
+    _userScrolledUp = dist > 60;
+    // 回到底部：清除新消息提示点
+    if (!_userScrolledUp) {
+      var btn = document.getElementById('scroll-bottom-btn');
+      if (btn) btn.classList.remove('has-new');
+    }
+  }, { passive: true });
+}
+
 function scrollToBottom() {
   var container = getMessagesContainer();
   if (!container) return;
-  var distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
-  if (distanceFromBottom <= 80) {
+  _bindAutoScrollTracking();
+  if (!_userScrolledUp) {
     container.scrollTop = container.scrollHeight;
+  } else {
+    // 用户在上方阅读时有新内容 → 给“回到底部”按钮加新消息提示点
+    var btn = document.getElementById('scroll-bottom-btn');
+    if (btn) btn.classList.add('has-new');
   }
 }
 
@@ -274,10 +296,10 @@ function copyCodeBlock(btn) {
 
   var text = code.textContent || code.innerText;
   navigator.clipboard.writeText(text).then(function() {
-    btn.textContent = '已复制';
+    btn.innerHTML = _iconCheck() + ' 已复制';
     btn.classList.add('copied');
     setTimeout(function() {
-      btn.textContent = '复制';
+      btn.innerHTML = '复制';
       btn.classList.remove('copied');
     }, 2000);
   }).catch(function() {
@@ -353,11 +375,16 @@ function copyAnswer(bubble, btn) {
   var done = function () {
     if (!btn) return;
     var span = btn.querySelector('span');
+    var icon = btn.querySelector('svg');
     var orig = span ? span.textContent : '';
+    var origIcon = icon ? icon.outerHTML : '';
     btn.classList.add('copied');
+    if (icon) icon.outerHTML = _iconCheck();
     if (span) span.textContent = '已复制';
     setTimeout(function () {
       btn.classList.remove('copied');
+      var nowIcon = btn.querySelector('svg');
+      if (nowIcon && origIcon) nowIcon.outerHTML = origIcon;
       if (span) span.textContent = orig;
     }, 1800);
   };
@@ -366,6 +393,10 @@ function copyAnswer(bubble, btn) {
   } else {
     done();
   }
+}
+
+function _iconCheck() {
+  return '<svg class="check-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
 }
 
 /**
@@ -451,8 +482,13 @@ function _getOrCreateToolGroup() {
   var body = document.createElement('div');
   body.className = 'tool-group-body';
 
+  // 包一层 bodywrap，用 grid 0fr↔1fr 实现可动画的弹性开合
+  var bodywrap = document.createElement('div');
+  bodywrap.className = 'tool-group-bodywrap';
+  bodywrap.appendChild(body);
+
   group.appendChild(summary);
-  group.appendChild(body);
+  group.appendChild(bodywrap);
   container.appendChild(group);
   return { group: group, body: body };
 }

@@ -84,6 +84,22 @@ function init() {
  */
 function _setupKeyboardShortcuts() {
   document.addEventListener('keydown', function (e) {
+    // ⌘/Ctrl+K → 新建对话
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      var chatView = document.getElementById('chat-view');
+      if (chatView && chatView.style.display !== 'none') {
+        e.preventDefault();
+        var newBtn = document.getElementById('new-thread-btn');
+        if (newBtn && !newBtn.disabled) newBtn.click();
+      }
+      return;
+    }
+    // ⌘/Ctrl+↑ → 回到顶部
+    if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowUp') {
+      var c = document.getElementById('messages');
+      if (c) { e.preventDefault(); c.scrollTo({ top: 0, behavior: 'smooth' }); }
+      return;
+    }
     if (e.key !== 'Escape') return;
     // 正在生成：优先停止流
     if (_currentStreamController) {
@@ -207,6 +223,8 @@ function useExample(text) {
  */
 function _runAgent(text) {
   _lastUserText = text;
+  // 新一轮开始：重置跟随状态，确保新内容钉在底部
+  if (typeof _userScrolledUp !== 'undefined') _userScrolledUp = false;
   var input = document.getElementById('message-input');
   var threadId = getThreadId();
 
@@ -429,12 +447,23 @@ function _setupScrollButton() {
 
   btn.addEventListener('click', function () {
     container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+    btn.classList.remove('has-new');
   });
 
   var _raf = 0;
+  var topbar = document.getElementById('topbar');
+  var progress = document.getElementById('scroll-progress');
   function update() {
     var dist = container.scrollHeight - container.scrollTop - container.clientHeight;
     btn.classList.toggle('show', dist > 240);
+    // 顶栏滚动感知 + 进度线
+    if (topbar) topbar.classList.toggle('scrolled', container.scrollTop > 8);
+    if (progress) {
+      var max = container.scrollHeight - container.clientHeight;
+      var pct = max > 0 ? Math.min(100, (container.scrollTop / max) * 100) : 0;
+      progress.style.width = pct + '%';
+      progress.classList.toggle('show', container.scrollTop > 8 && max > 40);
+    }
   }
   function scheduleUpdate() {
     if (_raf) return;

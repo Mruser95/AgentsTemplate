@@ -91,12 +91,51 @@ Ingested <added> chunks from <N> file(s). Store: <before> -> <after>.
 
 不要在第 1 步没做完就跳到第 3 步 —— chunk 文件若是空 list 或字段不全，会得到 "Ingested 0 chunks" 的假成功。
 
+### 示例：批量入库多个文件
+```
+1. terminal: ls Knowledge/chunks/
+2. knowledge_ingest: pattern="Knowledge/chunks/spec_*.json"
+3. 观察 added 数量是否与文件条数大致匹配
+4. knowledge_search: "spec 文档里关于 XX 的说明"
+```
+
+### 示例：入库后验证召回
+```
+1. knowledge_ingest: pattern="Knowledge/chunks/onboarding.json"
+2. knowledge_search: "新员工 onboarding 第一步要做什么"   # 用文档里确定存在的知识点
+3. top-1 score 高 → 入库成功；No results → 检查 chunk 内容是否为空
+```
+
 ---
 
 ## 📌 与其他工具的协作
 - 检索侧 → `knowledge_search`
 - 切分 / 预处理 → 项目自己的离线脚本，不属于本工具职责
 - chunk 文件存放建议放在 `Knowledge/chunks/`，便于 glob 管理
+- 验证格式 / 查看文件 → `terminal` 的 `ls` / `head`
+
+---
+
+## ❌ 反模式
+
+| 反模式 | 后果 | 改用 |
+|---|---|---|
+| 运行时 cat 一段文字写 JSON ingest | 切分质量差，检索噪声大 | 走离线 pipeline |
+| 同一文件 ingest 两次 | 重复 chunk，召回重复 | 重建前先 TRUNCATE |
+| 不验证就连续 ingest 大 glob | 出错难定位 | 逐文件 ingest + 验证 |
+| ingest 完不 search 验证 | 假成功（0 chunks）未发现 | 用已知 query 测召回 |
+| metadata 塞无关大字段 | embed 慢、存储膨胀 | metadata 只放 source/heading 等轻量信息 |
+
+---
+
+## 💡 metadata 建议
+
+`metadata` 会原样存入 JSONB，检索结果里可引用，建议包含：
+- `source`：原始文档路径或 URL
+- `heading` / `section`：章节标题，方便引用
+- `version` / `date`：文档版本或更新时间（如有）
+
+不要在 metadata 里塞整篇原文——正文已在 `content` 字段。
 
 ---
 

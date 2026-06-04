@@ -11,7 +11,7 @@ shell_permissions:
 shell_count_limit: 20
 shell_default_timeout: 90        # 默认 subprocess 超时（秒）；旧值 30s 会让联网/编译类命令被错杀
 shell_max_timeout: 300            # agent 通过 timeout 入参可申请的上限（秒）
-shell_output_max_length: 3000     # 命令输出超过该字符数会触发 LLM 总结（schema 输出）；<=0 关闭总结
+shell_output_max_length: 3000     # 命令输出超过该字符数做头尾截断（各留一半，保留尾部 traceback）；<=0 关闭截断
 terminal_small_max_tokens: 1024   # 命令审查 / 输出摘要 small_llm 的 max_tokens；输出只需短 JSON
 
 
@@ -21,8 +21,8 @@ edit_count_limit: 20              # 单个 thread 内 edit 工具的最大调用
 
 # >> Read Tool Configuration
 read_count_limit: 20              # read_file 单 thread 调用上限
-read_default_limit: 2000          # 默认从 offset 起最多读的行数（cat -n 格式）
-read_output_max_chars: 50000      # 单页渲染字符上限（token 预算的字符代理）：默认读超出→只返首页+PARTIAL；显式 offset/limit 超出→直接报错
+read_default_limit: 1000          # 默认从 offset 起最多读的行数（cat -n 格式）
+read_output_max_chars: 20000      # 单页渲染字符上限（token 预算的字符代理）：默认读超出→只返首页+PARTIAL；显式 offset/limit 超出→直接报错
 
 
 # >> Overview Tools (repo_map / grep / glob) Configuration
@@ -91,34 +91,34 @@ dispatch_count_limit: 5          # 单个综合任务最多派 5 个子任务（
 
 
 # >> Coder Agent Configuration
-coder_run_call_limit: 15         # max LLM calls per single coder.invoke run（旧值 50 太松；单文件改动正常 5-12 轮够，留余量给 lint 重试）
-coder_subtask_run_limit: 15      # 子代理（dispatch_coder 派发的一次性子任务）的强制 step 上限：超过后中间件会优雅退出，coder 必须直接产出 CoderReport 总结（旧值 24，下调防嵌套乘法爆炸）
+coder_run_call_limit: 25         # max LLM calls per single coder.invoke run（旧值 50 太松；单文件改动正常 5-12 轮够，留余量给 lint 重试）
+coder_subtask_run_limit: 25      # 子代理（dispatch_coder 派发的一次性子任务）的强制 step 上限：超过后中间件会优雅退出，coder 必须直接产出 CoderReport 总结（旧值 24，下调防嵌套乘法爆炸）
 coder_exit_behavior: end         # "end" -> graceful stop; "error" -> raise
 coder_lint_max_retries: 2        # max "lint fail -> feedback -> re-invoke" rounds (0 disables retry, status forced BLOCKED on first fail)
 coder_max_tokens: 8192          # 最大单次输出 token：要容纳整段代码 + CoderReport JSON；不够会触发截断
 
 
 # >> Tester Agent Configuration
-tester_run_call_limit: 10        # max LLM calls per single tester.invoke run
+tester_run_call_limit: 15        # max LLM calls per single tester.invoke run
 tester_exit_behavior: end        # "end" -> graceful stop; "error" -> raise
 tester_max_tokens: 4096          # 输出 TestDataset JSON；用例数量大可按需调高
 
 # >> Test Runner Agent Configuration（执行 TestDatasets.json 并产 TestReport）
-runner_run_call_limit: 30        # 跑用例需要更多 terminal 轮次
+runner_run_call_limit: 25        # 跑用例需要更多 terminal 轮次
 runner_exit_behavior: end
-runner_max_tokens: 4096          # 输出 TestReport JSON；results 数量大可按需调高
+runner_max_tokens: 8192          # 输出 TestReport JSON；4096 对 20+ 条 results 会撞顶截断→重试空烧输出（输出 $15/M 最贵），提到 8192 留头寸；配合 TestCaseResult.evidence/actual_output 的 ≤500 字符上限控总量
 
 
 # >> Checker Agent Configuration
-checker_run_call_limit: 5       # max LLM calls per single checker.invoke run
+checker_run_call_limit: 10       # max LLM calls per single checker.invoke run
 checker_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
 checker_max_tokens: 2048         # CheckerReport 本身短，2K 足够
 
 
 # >> Manager Agent Configuration
-manager_run_call_limit: 30       # max LLM calls per single manager.invoke run (executing 阶段会循环派发，预算要够)
+manager_run_call_limit: 60       # max LLM calls per single manager.invoke run（executing 阶段循环派发 + 自救重派很吃预算；旧值 30 常导致"做完一块就停下报告用户"。配 _ManagerBudgetReminder 临近上限才收尾）
 manager_exit_behavior: end       # "end" -> graceful stop; "error" -> raise
-manager_recursion_limit: 120     # 限制单次运行循环步数，避免长时间内部自循环
+manager_recursion_limit: 2000     # 限制单次运行循环步数；须 > run_limit*2（每次 LLM 调用≈model+tools 两步），否则会在 run_limit 优雅退出前先抛 GraphRecursionError 硬崩
 manager_max_tokens: 2048         # 限制单次输出长度，减少大段生成导致的等待
 
 

@@ -1,8 +1,8 @@
 from typing import Any, Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
@@ -33,6 +33,7 @@ llm = ChatOpenAI(
     model=os.getenv("code_llm_model"),
     api_key=os.getenv("code_llm_key"),
     base_url=os.getenv("code_llm_base_url"),
+    max_tokens=int(_CFG.get("runner_max_tokens", 4096)),  # 兜底上限：salvage 走裸 llm，缺此值会按模型上限(65536)向 OpenRouter 预扣额度 → 402；agent 主路径的 .bind() 仍按 prefix 覆盖
     disable_streaming=not bool(_CFG.get("subagent_stream_output", False)),
     **llm_runtime_kwargs("tester", _CFG),
 )
@@ -152,6 +153,7 @@ class TestCaseResult(BaseModel):
     passed: bool = Field(description="本条用例是否通过。")
     actual_output: Optional[Any] = Field(default=None, description=(
         "被测程序实际输出（数据 / 异常类型 / 退出码摘要）；passed 与否都尽量填，便于 manager 复盘。"
+        "**只填摘要，≤ 500 字符**：大输出只留关键部分，不要原样转录完整结果。"
     ))
     failure_kind: Optional[FailureKind] = Field(default=None, description=(
         "failed 时必须给一个 FailureKind 枚举值；passed 时必须为 null。"
@@ -161,6 +163,7 @@ class TestCaseResult(BaseModel):
     ))
     evidence: str = Field(description=(
         "可追溯证据：实际命令、关键 stdout / stderr 摘录、退出码、文件路径；务必引用真实片段，禁止编造。"
+        "**长度硬上限：≤ 500 字符**——只留最能定位问题的关键片段（报错只保留尾部 traceback），禁止粘贴完整日志 / 完整 stdout。"
     ))
 
     @model_validator(mode="after")
@@ -235,20 +238,55 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
+class _BudgetReminder(AgentMiddleware):
+
+    def __init__(self, *, run_limit: int, report_name: str) -> None:
+        super().__init__()
+        self.run_limit = int(run_limit)
+        self.report_name = report_name
+
+    def wrap_model_call(self, request, handler):  # type: ignore[override]
+        return handler(self._with_reminder(request))
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[override]
+        return await handler(self._with_reminder(request))
+
+    def _with_reminder(self, request):
+        text = self._reminder_text(request.state)
+        if not text:  # 非最后一轮：原样返回，不追加任何消息 → 缓存命中最优
+            return request
+        return request.override(messages=list(request.messages) + [SystemMessage(content=text)])
+
+    def _reminder_text(self, state) -> str:
+        if self.run_limit <= 0:
+            return ""
+        current = int(state.get("run_model_call_count", 0)) + 1
+        if current < self.run_limit:  # 只在最后一轮注入
+            return ""
+        return (
+            f"\n\n[调用预算] 第 {self.run_limit}/{self.run_limit} 次——本次执行的**最后一次** LLM 调用："
+            f"不要再调用 terminal / tavily_search / read_file 等工具，立刻基于现有信息直接产出 "
+            f"{self.report_name} 结构化结果。"
+        )
+
+
 def _build_agent(prompt: str, schema: type[BaseModel], task_prompt: str, prefix: str):
     sp = f"{prompt}\n\n---\n\n{task_prompt}" if task_prompt.strip() else prompt
-    # tester 与 runner 共用底层 llm，按 prefix 绑定各自 max_tokens（无配置时回退 4096）
     bound_llm = llm.bind(max_tokens=int(_CFG.get(f"{prefix}_max_tokens", 4096)))
+    run_limit = int(_CFG.get(f"{prefix}_run_call_limit", 30))
     return create_agent(
         model=bound_llm,
         tools=[SkillLibrary(), SafeShell(), Read(), TavilySearch()],
         system_prompt=sp,
         response_format=schema,
         checkpointer=subagent_checkpointer(_CFG),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
-        middleware=[ModelCallLimitMiddleware(
-            run_limit=_CFG.get(f"{prefix}_run_call_limit", 30),
-            exit_behavior=_CFG.get(f"{prefix}_exit_behavior", "end"),
-        )],
+        middleware=[
+            _BudgetReminder(run_limit=run_limit, report_name=schema.__name__),
+            ModelCallLimitMiddleware(
+                run_limit=run_limit,
+                exit_behavior=_CFG.get(f"{prefix}_exit_behavior", "end"),
+            ),
+        ],
     )
 
 

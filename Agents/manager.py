@@ -2,9 +2,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Tuple
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
 from pathlib import Path
 from dotenv import load_dotenv
 import os
@@ -23,8 +23,14 @@ from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
 from Tools.plan import Plan  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
-from Tools.utils import is_summary_message, llm_runtime_kwargs, reset_tool_budgets, workspace_info  # noqa: E402
+from Tools.utils import (  # noqa: E402
+    ContextInjectMiddleware,
+    is_summary_message,
+    llm_runtime_kwargs,
+    reset_tool_budgets,
+)
 from Agents.retriver import retrieve  # noqa: E402
+from Agents.coder import dispatch_coder  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
 from Agents.tester import dispatch_tester, dispatch_test_runner  # noqa: E402
 from agents_prompt import manager_prompt  # noqa: E402
@@ -69,12 +75,36 @@ _MANAGER_TOOLS = [
     Plan(),
     Todo(read_only=True),
     retrieve,
+    dispatch_coder,
     dispatch_tasker_coder,
     dispatch_tester,
     dispatch_test_runner,
 ]
 
+class _ManagerBudgetReminder(AgentMiddleware):
+    def __init__(self, *, run_limit: int) -> None:
+        super().__init__()
+        self.run_limit = int(run_limit)
+
+    def wrap_model_call(self, request, handler):  # type: ignore[override]
+        return handler(self._with_reminder(request))
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[override]
+        return await handler(self._with_reminder(request))
+
+    def _with_reminder(self, request):
+        if self.run_limit <= 0 or int(request.state.get("run_model_call_count", 0)) + 1 < self.run_limit:
+            return request  # 非最后一轮：原样返回 → 缓存命中最优
+        text = (
+            f"\n\n[调用预算] 第 {self.run_limit}/{self.run_limit} 次——本轮**最后一次** LLM 调用：别再调工具，"
+            "立刻输出最终状态报告（做了什么 + 关键证据 + 还差哪些 subtask）。plan 未完成就**如实说**"
+            "“因本轮调用预算用尽暂停，下条消息接着推进”，别伪装成已完成、别把活含糊推给用户。"
+        )
+        return request.override(messages=list(request.messages) + [SystemMessage(content=text)])
+
 _MANAGER_MIDDLEWARE = [
+    ContextInjectMiddleware(workspace=True, project_know=True, plan=True),
+    _ManagerBudgetReminder(run_limit=manager_run_call_limit),
     ModelCallLimitMiddleware(
         run_limit=manager_run_call_limit,
         exit_behavior=manager_exit_behavior,
@@ -82,20 +112,10 @@ _MANAGER_MIDDLEWARE = [
 ]
 
 def _build_manager_agent(checkpointer: Any = None, thread_id: str | None = None):
-    sp = manager_prompt
-    if thread_id:
-        sp = sp + "\n\n---\n\n" + workspace_info(thread_id)
-    try:
-        from Memory.proj_agent import read_notes
-        notes = read_notes()
-    except Exception:
-        notes = ""
-    if notes:
-        sp = sp + "\n\n---\n\n## 项目进展记忆（projectKnow）\n" + notes
     return create_agent(
         model=llm,
         tools=_MANAGER_TOOLS,
-        system_prompt=sp,
+        system_prompt=manager_prompt,
         middleware=_MANAGER_MIDDLEWARE,
         checkpointer=checkpointer,
     )

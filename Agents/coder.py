@@ -4,11 +4,14 @@ from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from openai import LengthFinishReasonError
+from langchain_core.tools import StructuredTool
+from openai import APITimeoutError, LengthFinishReasonError
 from pathlib import Path
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 from dotenv import load_dotenv
 import asyncio
+import json
 import os
 import sys
 import yaml
@@ -23,7 +26,7 @@ from Tools.edit import Edit
 from Tools.read import Read
 from Tools.overview import Glob, Grep, RepoMap
 from Tools.linter import LintOutcome, alint_paths, lint_paths
-from Tools.utils import current_thread_id, llm_runtime_kwargs, subagent_checkpointer, workspace_dir
+from Tools.utils import current_thread_id, llm_runtime_kwargs, subagent_checkpointer, workspace_dir, workspace_info
 from agents_prompt import coder_prompt
 
 # 事件流回调（供 Tasker_coder 等下游 agent 复用） 
@@ -138,6 +141,8 @@ class CoderReport(BaseModel):
         description=(
             "跑过的验证命令 + 关键输出 + 退出码。**不要写'应该通过'这类措辞**——"
             "没跑过就写空串，并把 status 降级为 DONE_WITH_CONCERNS。"
+            "**长度硬上限：≤30 行 / 2000 字符**——只留命令本身、退出码和最关键的输出"
+            "（报错只保留尾部 traceback），禁止粘贴完整日志。"
         ),
     )
     # 注意：lint 字段不在 schema 里。由 invoke_with_lint_gate 在结构化输出
@@ -175,8 +180,7 @@ class _BudgetReminder(AgentMiddleware):
         text = self._reminder_text(request.state)
         if not text:
             return request
-        base = request.system_message.text if request.system_message else ""
-        return request.override(system_message=SystemMessage(content=base + text))
+        return request.override(messages=list(request.messages) + [SystemMessage(content=text)])
 
     def _reminder_text(self, state) -> str:
         if self.run_limit <= 0:
@@ -290,22 +294,72 @@ def _finalize_blocked(report: CoderReport | None, outcome: LintOutcome | None, l
     return report
 
 
-def _missing_structured_response_report() -> CoderReport:
+def _recover_from_trajectory(messages: list | None) -> tuple[list[FileChange], list[str], str]:
+    files: dict[str, str] = {}   # path -> action（首次出现为准：新建优先 create）
+    commands: list[str] = []
+    last_text = ""
+    for m in messages or []:
+        content = getattr(m, "content", "")
+        if isinstance(m, AIMessage) and isinstance(content, str) and content.strip():
+            last_text = content.strip()  # 取最后一段非空 AI 思考
+        for tc in (getattr(m, "tool_calls", None) or []):
+            try:
+                name, args = tc.get("name"), (tc.get("args") or {})
+            except AttributeError:
+                continue
+            if name == "edit":
+                path = str(args.get("path") or "").strip()
+                if path:
+                    mode = str(args.get("mode") or "create")
+                    files.setdefault(path, "create" if mode in ("create", "overwrite") else "modify")
+            elif name == "terminal":
+                cmd = str(args.get("command") or "").strip()
+                if cmd:
+                    commands.append(cmd[:200])
+    file_changes = [
+        FileChange(action=act, path=p, note="从被中断的执行轨迹恢复，可能未完成")
+        for p, act in files.items()
+    ]
+    return file_changes, commands, last_text
+
+
+def _missing_structured_response_report(messages: list | None = None) -> CoderReport:
+    file_changes, commands, last_text = _recover_from_trajectory(messages)
+    recovered = bool(file_changes or commands)
+    verification = ""
+    if commands:
+        verification = "（未走完结构化输出；以下为轨迹中真实跑过的命令，仅作线索非通过证据）\n" + "\n".join(commands[-5:])
+    if recovered:
+        open_issues = [
+            "coder 未走完结构化输出（多为**调用次数预算耗尽**——run_limit 撞顶，或被截断），但上方 "
+            "file_changes / verification 是从执行轨迹**本地恢复的真实进展**。**重派是有效推进**："
+            "下一个 coder 是全新子代理、调用次数预算也会刷新，能在已有进展上继续。**禁止从零原样重派**："
+            "把“已存在哪些文件、已跑哪些命令、还差什么”写进新 task_prompt 让它**接着做**；并提示它"
+            "**调用次数有限**——并行调用工具（一次回复并发多个 read/grep/terminal）、先落核心功能、"
+            "尽早产出结构化报告。无冲突子任务可同一回复并行派发。",
+        ]
+        if last_text:
+            open_issues.append("子代理中断前最后的思考：" + last_text[:300])
+    else:  # 轨迹里也没有任何实际产出：退回通用提示
+        open_issues = [
+            "coder agent 未返回结构化 CoderReport：可能是 system prompt 过长被截断、"
+            "**调用次数预算耗尽**（run_limit 撞顶），或模型未走完结构化输出流程。**禁止**原样重派，"
+            "请精简 task_prompt 或拆得更小再继续（下一个子代理预算会刷新）。",
+        ]
     return CoderReport(
         status="BLOCKED",
         task_name="(unknown)",
-        summary="coder agent 未返回结构化 CoderReport。",
+        summary=(
+            "coder 未返回结构化 CoderReport；已从执行轨迹本地恢复部分进展（见 file_changes / open_issues）。"
+            if recovered else "coder agent 未返回结构化 CoderReport。"
+        ),
         modules=[],
         usage="",
         usage_examples=[],
-        file_changes=[],
-        verification="",
+        file_changes=file_changes,
+        verification=verification,
         key_decisions=[],
-        open_issues=[
-            "coder agent 未返回结构化 CoderReport：可能是 system prompt 过长被截断、"
-            "工具预算耗尽，或模型未走完结构化输出流程。**禁止**原样重派，请精简 "
-            "task_prompt 或拆得更小再继续。",
-        ],
+        open_issues=open_issues,
     )
 
 
@@ -318,12 +372,38 @@ _SALVAGE_INSTRUCTION = (
 )
 
 
+_SALVAGE_TAIL_KEEP = 6  # salvage 只保留轨迹尾部最近 N 条原文，中间压成摘要——避免把撑爆预算的全量轨迹（可达十几万 token）原样重发，否则 salvage 调用会重蹈同一道墙
+
+
+def _trajectory_digest(messages: list) -> str:
+    """把整段轨迹压成要点摘要（已改文件 / 已跑命令 / 最后思考），在丢弃中间原文后仍保留事实线索。"""
+    file_changes, commands, last_text = _recover_from_trajectory(messages)
+    parts: list[str] = []
+    if file_changes:
+        parts.append("已改动文件：" + "；".join(f"{fc.action} {fc.path}" for fc in file_changes))
+    if commands:
+        parts.append("已跑命令（最近 5 条）：\n" + "\n".join(commands[-5:]))
+    if last_text:
+        parts.append("中断前最后思考：" + last_text[:300])
+    return "\n".join(parts)
+
+
 def _salvage_messages(messages: list) -> list | None:
     """预算耗尽 / 截断没走完结构化输出时，用现有对话历史拼出补救调用的输入；
+    为避免把撑爆预算的全量轨迹原样再发一次（salvage 注定重蹈覆辙），只保留首条任务消息 +
+    中间轨迹的要点摘要 + 尾部最近 N 条原文，并修掉首尾会破坏 tool_call 配对的悬空消息。
     若轨迹里没有任何实际产出（无 AI / Tool 消息）则返回 None，交回上层走 BLOCKED。"""
     if not any(isinstance(m, (AIMessage, ToolMessage)) for m in messages):
         return None
-    return list(messages) + [HumanMessage(content=_SALVAGE_INSTRUCTION)]
+    head = messages[:1] if messages and isinstance(messages[0], HumanMessage) else []
+    tail = list(messages[-_SALVAGE_TAIL_KEEP:])
+    while tail and isinstance(tail[0], ToolMessage):  # 丢掉悬空 tool 响应（发起方在被省略的中间段），否则裸 tool 消息打头会 400
+        tail = tail[1:]
+    while tail and isinstance(tail[-1], AIMessage) and getattr(tail[-1], "tool_calls", None):
+        tail = tail[:-1]  # 丢掉尾部「发起了 tool_call 但还没拿到响应」的 AIMessage：预算耗尽常停在这，直接接 HumanMessage 会破坏配对
+    digest = _trajectory_digest(messages)
+    bridge = [HumanMessage(content="（为控制长度，中间执行轨迹已省略，要点如下）\n" + digest)] if digest else []
+    return head + bridge + tail + [HumanMessage(content=_SALVAGE_INSTRUCTION)]
 
 
 def _salvage_report(messages: list) -> CoderReport | None:
@@ -363,7 +443,7 @@ def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | N
         if not isinstance(report, CoderReport):
             report = _salvage_report(state.get("messages") or [])  # 预算耗尽没走完结构化输出时，补一次救回成果，再走同一道 lint gate
             if not isinstance(report, CoderReport):
-                return _missing_structured_response_report()
+                return _missing_structured_response_report(state.get("messages") or [])  # salvage 也失败（同一配额墙）：本地打捞轨迹进展，别返回空 BLOCKED
 
         outcome = lint_paths(_changed_source_files(report))
         if outcome.passed:
@@ -381,23 +461,30 @@ def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | N
 
 async def astream_collect_final_state(agent: Any, messages: list, on_event: OnEvent | None = None) -> dict:
     final_state: dict = {}
+    seen: list = []  # 流式途中按序累积的 AI / Tool 消息：超时 / 截断时 root on_chain_end 跑不到、final_state 为空，用它兜底恢复已跑进展
     root_run_id: str | None = None
     try:
         async for event in agent.astream_events({"messages": messages}, version="v2"):
-            if root_run_id is None and event.get("event") == "on_chain_start":
+            kind = event.get("event")
+            if root_run_id is None and kind == "on_chain_start":
                 root_run_id = event.get("run_id")
-            if (
-                event.get("event") == "on_chain_end"
-                and event.get("run_id") == root_run_id
-            ):
+            if kind == "on_chain_end" and event.get("run_id") == root_run_id:
                 output = (event.get("data") or {}).get("output")
                 if isinstance(output, dict):
                     final_state = output
+            elif kind in ("on_chat_model_end", "on_tool_end"):
+                out = (event.get("data") or {}).get("output")
+                if isinstance(out, (AIMessage, ToolMessage)):  # AIMessageChunk 也是 AIMessage 子类
+                    seen.append(out)
             if on_event is not None:
                 await on_event(event)
-    except LengthFinishReasonError:
-        # 结构化输出撞 max_tokens 被截断：返回已收集 state（通常为空），让上层走 fallback report，不冒泡崩溃
-        return final_state
+    except (LengthFinishReasonError, httpx.TimeoutException, APITimeoutError):
+        # 结构化输出撞 max_tokens 被截断 / 流式读超时：root on_chain_end 没跑到，final_state 多为空。
+        # 返回流式途中累积的 seen 轨迹（含已改文件、已跑命令），让上层走 salvage / _missing_structured_response_report
+        # 做本地恢复，把已跑进展捞回来，而不是把超时冒泡成 Tasker_coder 的空 stub。
+        if final_state.get("messages"):
+            return final_state
+        return {"messages": seen}
     return final_state
 
 
@@ -416,7 +503,7 @@ async def ainvoke_with_lint_gate(
         if not isinstance(report, CoderReport):
             report = await _asalvage_report(state.get("messages") or [])  # 预算耗尽没走完结构化输出时，补一次救回成果，再走同一道 lint gate
             if not isinstance(report, CoderReport):
-                return _missing_structured_response_report()
+                return _missing_structured_response_report(state.get("messages") or [])  # salvage 也失败（同一配额墙）：本地打捞轨迹进展，别返回空 BLOCKED
 
         # _changed_source_files 现在只是路径计算，但保持 to_thread 习惯避免阻塞 loop
         paths = await asyncio.to_thread(_changed_source_files, report)
@@ -432,3 +519,67 @@ async def ainvoke_with_lint_gate(
         ]
 
     return _finalize_blocked(report, outcome, limit)
+
+
+def _coder_report_to_json(report: Any) -> str:
+    if report is None:
+        return ""
+    if isinstance(report, CoderReport):
+        payload = report.model_dump()
+    else:
+        payload = {"raw": str(report)}
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _format_task_specific_prompt(task_name: str, task_prompt: str, context: str) -> str:
+    task_name = task_name.strip() or "(未命名子任务)"
+    blocks = [f"## 本次子任务：{task_name}"]
+    context = context.strip()
+    if context:
+        blocks.append("### 上下文\n" + context)
+    blocks.append("### 任务要求\n" + task_prompt.strip())
+    blocks.append(workspace_info(current_thread_id()))
+    return "\n\n".join(blocks)
+
+
+def _format_child_initial(task_name: str) -> str:
+    return (
+        f"上级调度器已把子任务 **{task_name}** 的完整规格同步到你的 system prompt。"
+        "请按其中的需求、验证命令、边界约束动手执行；完成后用 CoderReport 结构化 "
+        "schema 输出 JSON 介绍（主要模块、用法、验证证据都要填）。"
+        "提交后系统会自动跑强制 lint 关卡；不过会把错误塞回来让你重改。"
+    )
+
+
+_DISPATCH_CODER_DESC = (
+    "把**一个不复杂、单一内聚**的编码子任务直接派给一个全新 coder 子代理（相当于一名员工，便宜、直达）。"
+    "适用：单文件或少数紧密相关文件的新增 / 修改、范围清晰、无需再拆子任务。"
+    "需要拆成 ≥2 个可独立交付的子任务 / 跨多模块协同的中大型工作请改用 dispatch_tasker_coder（外包小队，更贵）。"
+    "子代理隔离：只能看到通用 coder 编码规范 + 你写的 task_prompt，必须自包含（目标 / 精确相对路径 / "
+    "具体需求 / 验证命令 / 边界约束）。返回 coder 产出的 CoderReport JSON（status / task_name / summary / "
+    "modules / usage / usage_examples / file_changes / verification / key_decisions / open_issues），"
+    "提交后框架自动跑强制 lint 关卡。请解析该 JSON 再决定下一步。"
+)
+
+
+def _dispatch_coder_sync(task_name: str, task_prompt: str, context: str = "") -> str:
+    task_block = _format_task_specific_prompt(task_name, task_prompt, context)
+    child_agent = build_coder_agent(task_specific_prompt=task_block)  # 默认 coder_run_call_limit（完整单跑预算）
+    report = invoke_with_lint_gate(child_agent, _format_child_initial(task_name))
+    return _coder_report_to_json(report)
+
+
+async def _dispatch_coder_inner(task_name: str, task_prompt: str, context: str = "") -> str:
+    task_block = _format_task_specific_prompt(task_name, task_prompt, context)
+    child_agent = await asyncio.to_thread(build_coder_agent, task_specific_prompt=task_block)
+    on_event = on_event_var.get()
+    report = await ainvoke_with_lint_gate(child_agent, _format_child_initial(task_name), on_event=on_event)
+    return _coder_report_to_json(report)
+
+
+dispatch_coder = StructuredTool.from_function(
+    func=_dispatch_coder_sync,
+    coroutine=_dispatch_coder_inner,
+    name="dispatch_coder",
+    description=_DISPATCH_CODER_DESC,
+)

@@ -41,7 +41,7 @@ agent 运行时不要临时从 `terminal` 的输出里 cat 一段文字写成 JS
 ### 5. rerank 结果的 score 是相对量
 - `score` 来自 CrossEncoder，**同一次查询内**的大小关系有意义
 - **不同查询之间**的绝对阈值不通用，别拿 `score > 0.5` 作为硬判据
-- 返回里 `[1]` 明显比 `[2]` 分高 → 认为 `[1]` 更可信；`[1]` 跟 `[2]` 分差不大 → 综合看内容
+- 返回里 `[1]` 明显比 `[2]` 分高 → 认为 `[1]` 更可信；分差不大 → 综合看内容
 
 ---
 
@@ -83,7 +83,7 @@ agent 运行时不要临时从 `terminal` 的输出里 cat 一段文字写成 JS
 ```
 
 - `id` 是库里的主键，跟用户沟通时可以引用
-- `...[truncated]` 表示内容超过 500 字被截断 —— 如果需要完整上下文，**降低 `k` 让单条展示更长**或改窄 query，不要反复搜
+- `...[truncated]` 表示内容超过 500 字被截断 —— 降低 `k` 让单条展示更长，或改窄 query
 - `remaining ≤ 1` 时立即停搜，用已有片段作答
 
 ---
@@ -93,10 +93,10 @@ agent 运行时不要临时从 `terminal` 的输出里 cat 一段文字写成 JS
 | 返回内容 | 含义 | 处理方式 |
 |---|---|---|
 | `No results.` | 库空 / query 命中率为 0 | 先确认是否已 ingest；再用更贴近文档措辞的 query 重写一次（最多 1 次） |
-| `knowledge_search failed: OperationalError ...` | Postgres 连不上 / pgvector 未安装 | 告知用户检查 `config.yaml` 的 `dsn` 与 `CREATE EXTENSION vector;`，不要盲目重试 |
+| `knowledge_search failed: OperationalError ...` | Postgres 连不上 / pgvector 未安装 | 告知用户检查 `config.yaml` 的 `dsn` 与 `CREATE EXTENSION vector;` |
 | `knowledge_search failed: HFValidationError / ConnectionError` | HuggingFace 模型下载失败 | 提示用户配 `HF_ENDPOINT` 或本地离线模型路径，不要反复重试 |
 | `Tool call limit reached` | 次数耗尽 | 停用 `knowledge_search`，基于现有片段回答 |
-| `...[truncated]` | 单条内容被截断 | 降低 `k` 或重写更聚焦的 query，不要再搜同一问题 |
+| `...[truncated]` | 单条内容被截断 | 降低 `k` 或重写更聚焦的 query |
 
 ---
 
@@ -130,8 +130,20 @@ agent 运行时不要临时从 `terminal` 的输出里 cat 一段文字写成 JS
 
 ## 📌 与其他工具的协作
 - 公开互联网知识 → `tavily_search`（见其 skill）
-- 本仓库源码 / 配置 → `terminal` 的 `cat` / `grep` / `ls`
+- 本仓库源码 / 配置 → `terminal` 的 `cat` / `grep` / `ls`；或 overview 工具的 `grep`/`repo_map`
 - 运行时新增数据到库 → `knowledge_ingest`（见其 skill）；切分本身不是它的职责
+
+---
+
+## ❌ 反模式
+
+| 反模式 | 后果 | 改用 |
+|---|---|---|
+| 没 ingest 就连搜 | 浪费 retrieve 预算 | 先 ingest |
+| 同义 query 连搜 5 次 | 预算耗尽 | 一次写好，最多补 1 次 |
+| 用 score 绝对阈值判真伪 | 误判 | 同次查询内相对比较 |
+| 运行时 cat 文字 ingest | 检索质量差 | 走离线切分 |
+| 公开资讯走 knowledge_search | 一定 No results | 走 tavily |
 
 ---
 

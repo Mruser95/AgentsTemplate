@@ -1,7 +1,6 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, Optional, Type
-from langchain_core.messages import HumanMessage, get_buffer_string
 from langchain_core.tools import BaseTool
 from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel, Field
@@ -12,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Agents.checker import checker_agent, CheckerReport, checker_failed_report, salvage_checker, asalvage_checker  # noqa: E402
+from Agents.checker import run_checker, arun_checker  # noqa: E402
 from Tools.utils import current_thread_id  # noqa: E402
 
 
@@ -112,42 +111,7 @@ def _find_milestone(plan: dict, milestone_id: str) -> Optional[dict]:
     return None
 
 
-# Checker Hard Gate ====================================================================
-
-
-def _build_checker_user_content(plan: dict, messages: list) -> str:
-    transcript = get_buffer_string(messages or [])
-    return (
-        "=== PLAN ===\n"
-        f"{json.dumps(plan, ensure_ascii=False, indent=2)}\n\n"
-        "=== MESSAGES TRANSCRIPT ===\n"
-        f"{transcript}\n\n"
-        "请基于以上 plan 和 transcript 评估偏离情况，以 CheckerReport 结构化 JSON 输出。"
-    )
-
-
-def _run_checker_sync(messages: list, plan: dict) -> dict:
-    user_content = _build_checker_user_content(plan, messages)
-    state = checker_agent.invoke({"messages": [HumanMessage(content=user_content)]})
-    report = state.get("structured_response")
-    if not isinstance(report, CheckerReport):  # 缺结构化 -> 最后一次强制补救（仿 tester）
-        report = salvage_checker(state.get("messages") or [])
-    if not isinstance(report, CheckerReport):
-        return checker_failed_report()
-    return report.model_dump()
-
-
-async def _run_checker_async(messages: list, plan: dict) -> dict:
-    user_content = _build_checker_user_content(plan, messages)
-    state = await checker_agent.ainvoke(
-        {"messages": [HumanMessage(content=user_content)]}
-    )
-    report = state.get("structured_response")
-    if not isinstance(report, CheckerReport):  # 缺结构化 -> 最后一次强制补救（仿 tester）
-        report = await asalvage_checker(state.get("messages") or [])
-    if not isinstance(report, CheckerReport):
-        return checker_failed_report()
-    return report.model_dump()
+# Plan Tool ==========================================================================
 
 
 def _format_done_response(subtask_id: str, report: dict) -> str:
@@ -202,7 +166,7 @@ class Plan(BaseTool):
         kind, payload = prep
         if kind == "subtask_done":
             messages = (state or {}).get("messages", [])
-            report = _run_checker_sync(messages, payload["plan"])
+            report = run_checker(messages, payload["plan"])
             return _format_done_response(payload["subtask_id"], report)
         return payload
 
@@ -223,7 +187,7 @@ class Plan(BaseTool):
         kind, payload = prep
         if kind == "subtask_done":
             messages = (state or {}).get("messages", [])
-            report = await _run_checker_async(messages, payload["plan"])
+            report = await arun_checker(messages, payload["plan"])
             return _format_done_response(payload["subtask_id"], report)
         return payload
 
@@ -296,3 +260,21 @@ class Plan(BaseTool):
             f"未知 action '{action}'。可选: read / write / update_subtask_status / "
             "set_milestone_status / set_plan_status / clear。"
         )
+
+
+# Plan 自动注入（manager 每次 model call，messages 末尾追加 SystemMessage）====
+
+
+def plan_inject_text() -> str:
+    plan = _read_plan(_plan_path(current_thread_id()))
+    if plan is None:
+        return (
+            "## 当前 plan.json（自动注入 · 权威 · 必须遵守）\n\n"
+            "(plan.json 为空 / 不存在 / 非法 JSON)"
+        )
+    return (
+        "## 当前 plan.json（自动注入 · 权威 · 必须遵守）\n\n"
+        "以下 plan 是唯一事实源，不得偏离 goal / constraints / subtask 拓扑；"
+        "无需重复 plan(action='read')。\n\n"
+        f"```json\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n```"
+    )

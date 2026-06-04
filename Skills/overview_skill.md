@@ -34,7 +34,7 @@ description: 先 overview 再 read —— 用 AST repo map / glob / grep 把"该
 
 - **路径只能落 workspace**：`path` / `glob root` 必须是 workspace 内相对路径；
   绝对路径、`../` 越界都会被拒。
-- **每个工具都有调用预算**：`repo_map`/调用 20 次、`grep`/`glob` 各 30 次；
+- **每个工具都有调用预算**：`repo_map` 20 次、`grep`/`glob` 各 30 次；
   返回里会显示剩余次数，用完就停。
 - **每个工具都有输出上限**：超出会截断并提示，**不要靠多调几次拼回全量**——
   正确做法是收窄 `path` / `glob` / `pattern`。
@@ -95,6 +95,31 @@ grep(pattern, path='', glob='', regex=False, ignore_case=False,
 
 ---
 
+## ✅ 典型工作流示例
+
+### 示例 1：第一次进项目，找核心模块
+```
+1. repo_map(top_n=15)                    # 看 PageRank 最高的文件
+2. read_file(path='Agents/manager.py', start=1, end=50)  # 只读头部
+3. grep(pattern='def dispatch_', glob='Agents/*.py')     # 找调度入口
+```
+
+### 示例 2：改某个工具的实现
+```
+1. glob(pattern='Tools/plan.py')
+2. grep(pattern='update_subtask_status', path='Tools/plan.py')
+3. read_file(path='Tools/plan.py', start=<命中行-5>, end=<命中行+30>)
+4. edit(... mode='str_replace')
+```
+
+### 示例 3：排查报错字符串
+```
+1. grep(pattern='Navigation denied', glob='*.py')
+2. read_file 命中行附近
+```
+
+---
+
 ## ❌ 反模式
 
 | 反模式 | 改用 |
@@ -107,9 +132,25 @@ grep(pattern, path='', glob='', regex=False, ignore_case=False,
 
 ---
 
+## 📌 与其他工具的协作
+- 定位到具体行后 → `read_file` 读片段 → `edit` 最小修改
+- 需要跑命令验证 → `terminal`
+- 需要查外部文档 → `tavily_search`；内部已入库文档 → `knowledge_search`
+- **不要**用 terminal 的 `rg`/`find` 替代本工具——overview 工具有路径过滤和输出上限，更适合 agent 场景
+
+---
+
+## 💡 参数调优提示
+
+- 大仓库第一次 `repo_map(top_n=10~15)` 即可，不必一次展开全部签名。
+- `grep` 命中被截断时，**收窄 glob** 比增大 `max_results` 更有效。
+- 已知目标目录时，直接 `grep(path='Tools/', ...)` 跳过 glob 步骤。
+- 找类定义时 pattern 用 `'class Foo'`，找调用点用 `'Foo('` 或 `'import Foo'`。
+
+---
+
 ## 探索经验
 ```
 1. 应该避免做..., 否则会导致..., 应该做...
 2. ...
-...
 ```

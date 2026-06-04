@@ -59,6 +59,13 @@ description: 写 / 修改 workspace 内的文件（替代 cat>EOF / python -c op
 3. terminal: python -m py_compile spider.py
 ```
 
+**在文件末尾追加一段：**
+```
+1. terminal: wc -l service.py                 # 知道总行数
+2. edit(path='service.py', mode='insert',
+        insert_line=<总行数>, new_str='\ndef new_func():\n    pass')
+```
+
 **注意：**
 - `content` / `old_str` / `new_str` 都是**原样**写入，**不要**手工转义换行 / 引号。
 - 单次调用就把内容传完；不要把同一个新文件拆成多次 `insert` 拼接。
@@ -91,9 +98,50 @@ description: 写 / 修改 workspace 内的文件（替代 cat>EOF / python -c op
 
 ---
 
+## 📌 与其他工具的协作
+
+| 步骤 | 工具 | 说明 |
+|---|---|---|
+| 定位要改的片段 | `grep` / `repo_map` / `terminal sed -n` | 先 overview 再 read |
+| 执行修改 | `edit` | 优先 `str_replace` |
+| 语法自检 | `terminal python -m py_compile` | 改完必验 |
+| 跑测试 | `terminal pytest` | 验证行为 |
+| 登记变更 | CoderReport `file_changes` | 触发 lint gate |
+
+---
+
+## ✅ 典型工作流示例
+
+**修一个 bug（最小改动）：**
+```
+1. grep(pattern='def broken_func', glob='*.py')
+2. terminal: sed -n '<行号-5>,<行号+20p' target.py
+3. edit(mode='str_replace', old_str=<含上下文的原文>, new_str=<修正后>)
+4. terminal: python -m py_compile target.py && pytest tests/test_target.py
+5. file_changes 登记 target.py: modify
+```
+
+**新建模块：**
+```
+1. edit(path='Tools/new_tool.py', mode='create', content=<完整代码>)
+2. edit(path='Tools/__init__.py', mode='str_replace', old_str=..., new_str=...)  # 注册
+3. terminal: python -m py_compile Tools/new_tool.py
+```
+
+---
+
+## 💡 str_replace 技巧
+
+- `old_str` 从 terminal `sed -n` 输出**原样复制**，不要手改缩进或空格。
+- 改函数时把**函数签名 + 前几行 body** 都放进 `old_str`，确保唯一。
+- 多处相似代码要改一处时，**不要**用短 pattern 碰运气——加更多上下文。
+- 新建文件永远用 `create`；只有确认要覆盖时才用 `overwrite`。
+- 大文件局部改 5 行以内，**禁止** `overwrite` 整文件（diff 难审、易漏改）。
+
+---
+
 ## 探索经验
 ```
 1. 应该避免做..., 否则会导致..., 应该做...
 2. ...
-...
 ```

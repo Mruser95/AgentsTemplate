@@ -20,10 +20,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Agents.coder import (  # noqa: E402
     CoderModule,
-    CoderReport,
     FileChange,
     OnEvent,
     UsageExample,
+    _coder_report_to_json,
+    _format_child_initial,
+    _format_task_specific_prompt,
     ainvoke_with_lint_gate,
     astream_collect_final_state,
     build_coder_agent,
@@ -31,7 +33,7 @@ from Agents.coder import (  # noqa: E402
     invoke_with_lint_gate,
     on_event_var,
 )
-from Tools.utils import bump_budget, current_thread_id, llm_runtime_kwargs, reset_tool_budgets, subagent_checkpointer, workspace_info  # noqa: E402
+from Tools.utils import bump_budget, current_thread_id, ContextInjectMiddleware, llm_runtime_kwargs, reset_tool_budgets, subagent_checkpointer  # noqa: E402
 from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
@@ -63,8 +65,10 @@ class TaskerSubtaskSummary(BaseModel):
     verification: str = Field(
         default="",
         description=(
-            "子代理 verification 字段的摘要或原文（含命令与关键结果）。"
+            "子代理 verification 字段的摘要（含命令与关键结果）。"
             "若子代理没跑真实验证，必须原样反映，不要美化。"
+            "**长度硬上限：≤30 行 / 2000 字符**——只留命令本身、退出码和最关键的输出"
+            "（报错只保留尾部 traceback），禁止粘贴完整日志或原样转录子代理的长输出。"
         ),
     )
 
@@ -127,28 +131,6 @@ class TaskerReport(BaseModel):
 # DispatchCoder Tool ==================================================================
 
 
-def _coder_report_to_json(report: Any) -> str:
-    if report is None:
-        return ""
-    if isinstance(report, CoderReport):
-        payload = report.model_dump()
-    else:
-        payload = {"raw": str(report)}
-    return json.dumps(payload, ensure_ascii=False, indent=2)
-
-
-def _format_task_specific_prompt(task_name: str, task_prompt: str, context: str) -> str:
-    task_name = task_name.strip() or "(未命名子任务)"
-    blocks = [f"## 本次子任务：{task_name}"]
-    context = context.strip()
-    if context:
-        blocks.append("### 上下文\n" + context)
-    blocks.append("### 任务要求\n" + task_prompt.strip())
-    tid = current_thread_id()
-    blocks.append(workspace_info(tid))
-    return "\n\n".join(blocks)
-
-
 class DispatchCoderInput(BaseModel):
     task_name: str = Field(
         description="子任务简短名字（用于日志与最终汇总表格），避免空格以外的特殊字符。"
@@ -176,15 +158,6 @@ class DispatchCoderInput(BaseModel):
             "强制 1:1：每条 step 必须且只能对应一次 dispatch_coder 调用；并行派发时"
             "也要给出各自正确的 step_index。"
         ),
-    )
-
-
-def _format_child_initial(task_name: str) -> str:
-    return (
-        f"上级调度器已把子任务 **{task_name}** 的完整规格同步到你的 system prompt。"
-        "请按其中的需求、验证命令、边界约束动手执行；完成后用 CoderReport 结构化 "
-        "schema 输出 JSON 介绍（主要模块、用法、验证证据都要填）。"
-        "提交后系统会自动跑强制 lint 关卡；不过会把错误塞回来让你重改。"
     )
 
 
@@ -318,6 +291,7 @@ tasker_coder_agent = create_agent(
     response_format=TaskerReport,
     checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）
     middleware=[
+        ContextInjectMiddleware(workspace=True, todo=True),
         ModelCallLimitMiddleware(
             run_limit=tasker_run_call_limit,
             exit_behavior=tasker_exit_behavior,

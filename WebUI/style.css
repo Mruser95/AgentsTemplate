@@ -79,6 +79,29 @@ input:focus-visible {
   0% { opacity: 0; transform: translateY(10px) scale(0.96); }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
+/* 方向性入场：用户气泡从右下、AI 气泡从左下，方向感更强 */
+@keyframes popInRight {
+  0% { opacity: 0; transform: translate(14px, 10px) scale(0.95); }
+  100% { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+@keyframes popInLeft {
+  0% { opacity: 0; transform: translate(-14px, 10px) scale(0.95); }
+  100% { opacity: 1; transform: translate(0, 0) scale(1); }
+}
+/* 流式尾部渐显：每次追加后最后一个块轻轻“长出来” */
+@keyframes tailIn {
+  0% { opacity: 0.35; transform: translateY(2px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+/* 复制对勾描边动画 */
+@keyframes checkDraw {
+  from { stroke-dashoffset: 22; }
+  to { stroke-dashoffset: 0; }
+}
+/* 空状态光环外圈缓慢旋转 */
+@keyframes haloSpin {
+  to { transform: rotate(360deg); }
+}
 @keyframes emptyIn {
   0% { opacity: 0; transform: translateY(12px); }
   100% { opacity: 1; transform: translateY(0); }
@@ -369,7 +392,8 @@ input:focus-visible {
   flex-direction: column;
   min-width: 0;
   width: 100%;
-  max-width: min(1400px, 92vw);
+  /* 聚焦阅读栏：即使超宽显示器也保持舌适行长，不让文字拉到两千像素 */
+  max-width: min(860px, 92vw);
   margin: 0 auto;
   height: 100%;
 }
@@ -377,10 +401,8 @@ input:focus-visible {
 #messages {
   flex: 1;
   overflow-y: auto;
-  /* 左右浪视留白固定对称，形成一条明确的内容通道；
-     所有气泡 / 工具收纳盒的右边统一对齐到通道右边 */
-  padding: 90px clamp(22px, 6%, 80px) 120px clamp(22px, 6%, 80px);
-  scroll-behavior: smooth;
+  /* 上下留白固定，左右随栏宽自适应；所有气泡右边对齐到通道右边 */
+  padding: 90px clamp(20px, 4%, 40px) 120px clamp(20px, 4%, 40px);
 }
 
 /* --- Message Bubbles --- */
@@ -404,17 +426,24 @@ input:focus-visible {
   background: var(--user-bubble);
   color: var(--ink);
   transform-origin: right bottom;
+  animation: popInRight 0.5s var(--spring) forwards;
 }
 
 /* AI message — left-aligned, subtle glass */
 .message.ai {
   margin-right: auto;
-  background: rgba(255, 255, 255, 0.9);
+  max-width: 100%;
+  /* 纸感：顶部偏白、底部偏象牙的极淡暖渐变 + 左上几乎不可见的高光 */
+  background:
+    radial-gradient(120% 80% at 18% 0%, rgba(255, 255, 255, 0.96), rgba(255, 255, 255, 0) 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(250, 248, 242, 0.92));
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   color: var(--ink);
-  box-shadow: var(--sh-sm), inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--border);
+  box-shadow: var(--sh-sm);
   transform-origin: left bottom;
+  animation: popInLeft 0.5s var(--spring) forwards;
 }
 
 /* --- Tool Call Indicator (glass, collapsible) --- */
@@ -671,13 +700,14 @@ input:focus-visible {
   position: relative;
   margin: 12px 0;
   padding: 16px 18px;
-  background: #1f2028;
-  color: #e8e8e8;
+  /* 与暖色系协调的深棕墨色（而非纯黑） */
+  background: linear-gradient(180deg, #2a2521, #221e1a);
+  color: #ece7df;
   border-radius: var(--r-md);
   overflow-x: auto;
   font-size: 13px;
   line-height: 1.6;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(216, 185, 120, 0.1), 0 4px 14px rgba(40, 32, 18, 0.12);
 }
 
 .message pre code {
@@ -831,7 +861,7 @@ input:focus-visible {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-height: 55vh;
+  min-height: calc(100dvh - 230px);
   text-align: center;
   padding: 24px;
   animation: emptyIn 0.7s var(--spring) forwards;
@@ -1439,4 +1469,150 @@ input:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   .empty-orb, .message.ai.streaming::after { animation: none; }
+}
+
+/* ============================================
+   第二轮灵动打磨：工具盒弹性开合 / 顶栏滚动感知 /
+   滚动进度线 / 输入框聚焦升起 / 空状态光环 /
+   消息分组节奏 / 流式尾部渐显 / 复制对勾 / 新消息提示
+   ============================================ */
+
+/* --- 工具盒弹性开合（max-height 动画，可靠地适应不定高容器） --- */
+.tool-group-bodywrap {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.42s var(--spring), opacity 0.3s var(--ease);
+}
+.tool-group[open] > .tool-group-bodywrap {
+  max-height: 320px;
+  opacity: 1;
+}
+/* 抵消浏览器对 <details> 折叠时 display:none 的默认行为，让高度可动画 */
+.tool-group:not([open]) > .tool-group-bodywrap {
+  display: block;
+}
+
+/* --- 流式尾部渐显：每追加一段，最后一个块轻轻"长出来" --- */
+.message.ai.streaming > *:last-child {
+  animation: tailIn 0.32s var(--ease);
+}
+
+/* --- 顶栏滚动感知：滚动后加强毛玻璃 + 细分割线；顶部时透明融入 --- */
+#topbar {
+  transition: background 0.4s var(--ease), box-shadow 0.4s var(--ease), border-color 0.4s var(--ease);
+}
+#topbar.scrolled {
+  background: linear-gradient(to bottom, rgba(251, 250, 246, 0.82) 0%, rgba(251, 250, 246, 0.7) 60%, var(--ivory-veil-0) 100%);
+  box-shadow: 0 1px 0 var(--border), var(--sh-sm);
+}
+
+/* --- 顶部滚动进度线（极细蜂蜜金，位于视区最顶端，不受顶栏遮罩影响） --- */
+#scroll-progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 200;
+  height: 2.5px;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-bright));
+  box-shadow: 0 0 6px var(--accent-glow);
+  border-radius: 0 2px 2px 0;
+  opacity: 0;
+  transition: width 0.18s var(--ease), opacity 0.4s var(--ease);
+  pointer-events: none;
+}
+#topbar.scrolled ~ #scroll-progress,
+#scroll-progress.show { opacity: 1; }
+
+/* --- 输入栏聚焦升起：整条轻微上浮、输入框光环呼吸 --- */
+#input-bar {
+  transition: transform 0.35s var(--spring);
+}
+#input-bar:focus-within {
+  transform: translateY(-2px);
+}
+#input-bar:focus-within #message-input {
+  box-shadow: inset 0 0 0 1.5px var(--accent-line), 0 10px 28px var(--accent-soft);
+}
+
+/* --- 发送按钮：图标 + 文字，按压涟漪反馈 --- */
+#send-btn, #stop-btn {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+#send-btn svg, #stop-btn svg { flex-shrink: 0; }
+#send-btn::after, #stop-btn::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  transform: translate(-50%, -50%) scale(0);
+  opacity: 0;
+  pointer-events: none;
+}
+#send-btn:active:not(:disabled)::after, #stop-btn:active::after {
+  animation: btnRipple 0.5s var(--ease);
+}
+@keyframes btnRipple {
+  0% { transform: translate(-50%, -50%) scale(0); opacity: 0.6; }
+  100% { transform: translate(-50%, -50%) scale(14); opacity: 0; }
+}
+
+/* --- 复制成功：对勾描边划出 --- */
+.msg-action-btn .check-icon path,
+.code-copy-btn .check-icon path {
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+  animation: checkDraw 0.4s var(--ease) forwards;
+}
+
+/* --- 消息分组节奏：不同轮次拉开间距，工具盒紧贴其上文 --- */
+.message.user { margin-top: 30px; }
+#messages > .message.user:first-child { margin-top: 0; }
+.message.ai { margin-top: 6px; }
+.tool-group { margin-top: 6px; }
+/* AI 文字后紧跟的工具盒收紧，形成"思考→行动→输出"整体 */
+.message.ai + .tool-group { margin-top: 4px; }
+
+/* --- 空状态光环：缓慢旋转的柔光外圈 --- */
+.empty-orb { position: relative; }
+.empty-orb::before {
+  content: '';
+  position: absolute;
+  inset: -14px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, var(--accent-glow), transparent 38%, var(--accent-soft) 62%, transparent 88%, var(--accent-glow));
+  filter: blur(7px);
+  opacity: 0.7;
+  z-index: -1;
+  animation: haloSpin 14s linear infinite;
+}
+
+/* --- 回到底部按钮：有新消息时的小圆点提示 --- */
+#scroll-bottom-btn { position: absolute; }
+#scroll-bottom-btn::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--ivory);
+  transform: scale(0);
+  transition: transform 0.3s var(--spring);
+}
+#scroll-bottom-btn.has-new::after { transform: scale(1); }
+
+@media (prefers-reduced-motion: reduce) {
+  .empty-orb::before, .message.ai.streaming > *:last-child { animation: none; }
 }

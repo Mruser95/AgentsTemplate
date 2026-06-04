@@ -77,9 +77,7 @@ def _parse_steps(text: str) -> list[tuple[str, bool]]:
     for line in text.splitlines():
         s = line.rstrip()
         if len(s) >= 6 and s.startswith("- [") and s[4] == "]":
-            done = s[3].lower() == "x"
-            content = s[5:].strip()
-            out.append((content, done))
+            out.append((s[5:].strip(), s[3].lower() == "x"))
     return out
 
 
@@ -162,3 +160,14 @@ class Todo(BaseTool):
             steps=steps,
             step_index=step_index,
         )
+
+
+def todo_inject_text() -> str:
+    text = _read_text(_todo_path(current_thread_id())).strip()
+    body = text or "(workingTodo.md 为空 / 未创建)"
+    return (
+        "## 当前 workingTodo.md（自动注入 · 权威 · 必须遵守）\n\n"
+        "严格按清单 dispatch_coder（step_index 1:1）；先 write_steps 再派发；"
+        "无需 todo view。\n\n"
+        f"```markdown\n{body}\n```"
+    )

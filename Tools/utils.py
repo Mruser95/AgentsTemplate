@@ -195,3 +195,72 @@ async def compress_ckpt_messages(thread_id: str, removed_ids: list[str], summary
         await agent.aupdate_state({"configurable": {"thread_id": thread_id}}, {"messages": ops})
 
 
+# 可变上下文注入（messages 末尾 SystemMessage，静态 system_prompt 保缓存）==========
+
+from langchain.agents.middleware import AgentMiddleware  # noqa: E402
+from langchain_core.messages import SystemMessage  # noqa: E402
+
+
+def project_know_text() -> str:
+    try:
+        from Memory.proj_agent import read_notes
+        notes = read_notes()
+    except Exception:
+        notes = ""
+    if not notes:
+        return ""
+    return "## 项目进展记忆（projectKnow）\n" + notes
+
+
+class ContextInjectMiddleware(AgentMiddleware):
+    """workspace / projectKnow / plan / todo / extra 等可变块 → messages 末尾 SystemMessage。"""
+
+    def __init__(
+        self,
+        *,
+        workspace: bool = False,
+        project_know: bool = False,
+        plan: bool = False,
+        todo: bool = False,
+        extra: str = "",
+    ) -> None:
+        super().__init__()
+        self.workspace = workspace
+        self.project_know = project_know
+        self.plan = plan
+        self.todo = todo
+        self.extra = extra
+
+    def _parts(self) -> list[str]:
+        parts: list[str] = []
+        if self.workspace:
+            parts.append(workspace_info(current_thread_id()))
+        if self.project_know:
+            t = project_know_text()
+            if t:
+                parts.append(t)
+        if self.plan:
+            from Tools.plan import plan_inject_text
+            parts.append(plan_inject_text())
+        if self.todo:
+            from Tools.todo import todo_inject_text
+            parts.append(todo_inject_text())
+        if self.extra.strip():
+            parts.append(self.extra.strip())
+        return parts
+
+    def wrap_model_call(self, request, handler):  # type: ignore[override]
+        return handler(self._inject(request))
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[override]
+        return await handler(self._inject(request))
+
+    def _inject(self, request):
+        parts = self._parts()
+        if not parts:
+            return request
+        return request.override(
+            messages=list(request.messages) + [SystemMessage(content="\n\n---\n\n".join(parts))]
+        )
+
+
