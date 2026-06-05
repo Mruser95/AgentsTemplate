@@ -22,7 +22,6 @@ from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
 from Tools.plan import Plan  # noqa: E402
-from Tools.todo import Todo  # noqa: E402
 from Tools.utils import (  # noqa: E402
     ContextInjectMiddleware,
     is_summary_message,
@@ -73,7 +72,6 @@ _MANAGER_TOOLS = [
     TavilySearch(),
     Schedule(),
     Plan(),
-    Todo(read_only=True),
     retrieve,
     dispatch_coder,
     dispatch_tasker_coder,

@@ -17,7 +17,7 @@ from Tools.utils import PROJECT_ROOT, is_summary_message, read_ckpt_msgs
 
 
 _CFG = yaml.safe_load((PROJECT_ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
-_TURN_THRESHOLD = int(_CFG.get("collation_turn_threshold", 100))
+_TURN_THRESHOLD = int(_CFG.get("collation_turn_threshold", 50))
 _MAX_PARALLEL = int(_CFG.get("collation_max_parallel", 2))
 _RETRY_COUNT = int(_CFG.get("collation_retry_count", 1))
 _LONG_MEM_K = int(_CFG.get("collation_long_memory_k", 5))

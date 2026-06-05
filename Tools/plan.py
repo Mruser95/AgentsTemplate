@@ -114,14 +114,40 @@ def _find_milestone(plan: dict, milestone_id: str) -> Optional[dict]:
 # Plan Tool ==========================================================================
 
 
-def _format_done_response(subtask_id: str, report: dict) -> str:
+HARD_GATE_THRESHOLD = 50
+HARD_GATE_NOTE = "（偏离分过大，系统判定为不通过，请修复或补充证据）"
+
+
+def _apply_hard_gate(subtask_id: str, plan: dict, report: dict) -> bool:
+    """硬门禁（纯代码控制，不依赖 LLM）：drift_score > 50 时，把该 subtask 及其所属
+    milestone 一并回退为 in_progress，并把系统判定语写进 report。返回是否触发。"""
+    if int(report.get("drift_score", 0)) <= HARD_GATE_THRESHOLD:
+        return False
+    m, st = _find_subtask(plan, subtask_id)
+    if st is not None:
+        st["status"] = "in_progress"
+        if m is not None:
+            m["status"] = "in_progress"
+        _write_plan(_plan_path(current_thread_id()), plan)
+    report["system_verdict"] = HARD_GATE_NOTE
+    return True
+
+
+def _format_done_response(subtask_id: str, report: dict, gated: bool = False) -> str:
+    if gated:
+        head = (
+            f"=== 硬门禁不通过：subtask `{subtask_id}` drift_score="
+            f"{report.get('drift_score')} > {HARD_GATE_THRESHOLD} ===\n"
+            "已自动把该 subtask 及其所属 milestone 一并回退为 in_progress（本次 done 不予采纳）。\n\n"
+        )
+    else:
+        head = f"=== subtask `{subtask_id}` 已写入 plan.json，状态 = done ===\n\n"
     return (
-        f"=== subtask `{subtask_id}` 已写入 plan.json，状态 = done ===\n\n"
-        f"=== Checker 强制对齐报告（hard gate） ===\n"
+        head
+        + "=== Checker 强制对齐报告（hard gate） ===\n"
         f"{json.dumps(report, ensure_ascii=False, indent=2)}\n\n"
         "=== 你下一步必须做的（铁律） ===\n"
-        "* on_track / minor_drift  → 调 todo(action='clear') 清空当前 todo，"
-        "再开始下一个 subtask（先 todo write_steps，再派发 / 执行）。\n"
+        "* on_track / minor_drift  → 直接开始下一个 subtask（按 plan 拓扑派发 / 执行）。\n"
         "* major_drift / off_track → 立即按 suggestions 调整（回滚刚才的状态 / "
         "重做 / 拆分 subtask），**禁止**继续推进；必要时把 plan.status 改回 "
         "'drafting' 并向用户复盘。\n"
@@ -141,7 +167,9 @@ class Plan(BaseTool):
         "会自动加 created_at）；\n"
         "- update_subtask_status: 改某个 subtask 的 status（pending/in_progress/done/blocked）。"
         "**当 new_status='done' 时，本工具会强制调 checker_agent 做对齐检查，"
-        "并把 CheckerReport 嵌入返回值；manager 必须读完 report 再决定下一步**；\n"
+        "并把 CheckerReport 嵌入返回值；manager 必须读完 report 再决定下一步。"
+        "若 report.drift_score > 50，系统会硬门禁判定不通过：自动把该 subtask 及其所属 "
+        "milestone 一并回退为 in_progress 并在 report 附判定语，此 done 不予采纳**；\n"
         "- set_milestone_status: 改 milestone 的 status；\n"
         "- set_plan_status: 改 plan.status（drafting/ready/executing/done/blocked）；\n"
         "- clear: 清空 plan.json。\n"
@@ -167,7 +195,8 @@ class Plan(BaseTool):
         if kind == "subtask_done":
             messages = (state or {}).get("messages", [])
             report = run_checker(messages, payload["plan"])
-            return _format_done_response(payload["subtask_id"], report)
+            gated = _apply_hard_gate(payload["subtask_id"], payload["plan"], report)
+            return _format_done_response(payload["subtask_id"], report, gated)
         return payload
 
     async def _arun(
@@ -188,7 +217,8 @@ class Plan(BaseTool):
         if kind == "subtask_done":
             messages = (state or {}).get("messages", [])
             report = await arun_checker(messages, payload["plan"])
-            return _format_done_response(payload["subtask_id"], report)
+            gated = _apply_hard_gate(payload["subtask_id"], payload["plan"], report)
+            return _format_done_response(payload["subtask_id"], report, gated)
         return payload
 
 

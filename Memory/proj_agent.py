@@ -20,30 +20,33 @@ from toolagent_prompt import PROJECT_MEMORY_PROMPT  # noqa: E402
 
 load_dotenv()
 llm = ChatOpenAI(
-    model=os.getenv("agent_llm_model"),
-    api_key=os.getenv("agent_llm_key"),
-    base_url=os.getenv("agent_llm_base_url"),
+    model=os.getenv("small_llm_model"),
+    api_key=os.getenv("small_llm_key"),
+    base_url=os.getenv("small_llm_base_url"),
 )
 
 
 NOTE_PATH = ROOT / "Memory" / "projectKnow.md"
 _LOCK = asyncio.Lock()
-_TAIL_LINES = 20  # 反馈给 LLM 用于判 new_task 的最近行数
+_TAIL_LINES = 20  # 反馈给 LLM 用于判 new_task 与去重的最近行数
 
 
-class ProjectStepBatch(BaseModel):
+class ProjectKnowledgeBatch(BaseModel):
     new_task: bool = Field(
         default=False,
         description=(
             "True ONLY when the new notes belong to a clearly different "
-            "top-level project goal than existing_notes. False on doubt."
+            "top-level project than existing_notes. False on doubt."
         ),
     )
     notes: list[str] = Field(
         default_factory=list,
         description=(
-            "Zero or more one-sentence Chinese notes shaped as "
-            "'目标<G>：上一步<P>，这一步<C>，效果<R>，达成<E>。'"
+            "Zero or more one-line Chinese notes about THIS project, each tagged: "
+            "【流程】(ordered execution steps toward a goal) / 【坑】(pitfall+后果+规避) / "
+            "【方法】(useful method) / 【知识】(project-specific fact). Capture BOTH the "
+            "execution flow and the knowledge gained, anchoring each knowledge note to "
+            "its step in the flow. No fluff."
         ),
     )
 
@@ -53,7 +56,7 @@ _chain = (
         ("system", PROJECT_MEMORY_PROMPT),
         ("human", "existing_notes:\n{existing}\n\ntranscript:\n{transcript}"),
     ])
-    | llm.with_structured_output(ProjectStepBatch)
+    | llm.with_structured_output(ProjectKnowledgeBatch)
 )
 
 
@@ -94,11 +97,11 @@ async def _write(tid: str, notes: list[str], *, reset: bool) -> None:
 
 
 async def route_project(tid: str, new: list[BaseMessage], *, offset: int = 0, k: int = 5) -> None:
-    """从最近消息抽取项目推进步骤；任务切换时清空旧记录后再写。"""
+    """从最近消息抽取项目记忆（执行流程 + 坑/方法/知识）；任务切换时清空旧记录后再写。"""
     if not new:
         return
     existing = _read_tail()
-    batch: ProjectStepBatch = await _chain.ainvoke({
+    batch: ProjectKnowledgeBatch = await _chain.ainvoke({
         "existing": existing or "(empty)",
         "transcript": get_buffer_string(new),
     })

@@ -209,7 +209,7 @@ def project_know_text() -> str:
         notes = ""
     if not notes:
         return ""
-    return "## 项目进展记忆（projectKnow）\n" + notes
+    return "## 项目记忆（projectKnow：历史执行流程 + 坑/方法/知识）\n" + notes
 
 
 class ContextInjectMiddleware(AgentMiddleware):

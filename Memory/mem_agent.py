@@ -32,7 +32,11 @@ llm = ChatOpenAI(
     api_key=os.getenv("agent_llm_key"),
     base_url=os.getenv("agent_llm_base_url"),
 )
-
+llm_sml = ChatOpenAI(
+    model=os.getenv("small_llm_model"),
+    api_key=os.getenv("small_llm_key"),
+    base_url=os.getenv("small_llm_base_url"),
+)
 
 # extraction schemas =========================================================
 
@@ -172,7 +176,7 @@ _short_chain = (
         ("system", SHORT_MEMORY_PROMPT),
         ("human", "{transcript}"),
     ])
-    | llm.with_structured_output(ShortMemoryEntry)
+    | llm_sml.with_structured_output(ShortMemoryEntry)
 )
 
 _long_extract_chain = (
@@ -180,7 +184,7 @@ _long_extract_chain = (
         ("system", LONG_MEMORY_PROMPT),
         ("human", "{transcript}"),
     ])
-    | llm.with_structured_output(LongMemoryBatch)
+    | llm_sml.with_structured_output(LongMemoryBatch)
 )
 
 _long_chain = (
