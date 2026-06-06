@@ -90,6 +90,16 @@ function resetThreadId() {
 }
 
 /**
+ * 切换当前活跃 thread_id（从左侧会话列表选中某条历史会话）
+ * 持久化到当前 key 的存储槽，刷新/再次登录会恢复到这条会话
+ * @param {string} id
+ */
+function setThreadId(id) {
+  if (!id) return;
+  localStorage.setItem(_currentThreadStorageKey(), id);
+}
+
+/**
  * 清除当前 API Key 对应的 thread_id
  * 一般不主动调用——logout 默认不清，保留的 thread_id 便于同 key 再次登录恢复会话
  */

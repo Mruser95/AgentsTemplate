@@ -19,25 +19,41 @@
     </div>
   </div>
 
-  <!-- 聊天视图：单线程模式（一个用户一个 thread_id） -->
+  <!-- 聊天视图：左侧会话列表 + 右侧聊天区 -->
   <div id="chat-view" style="display:none">
-    <div id="scroll-progress"></div>
-    <header id="topbar">
-      <div class="topbar-title"><span class="brand-dot"></span>Agent WebUI</div>
-      <div class="topbar-actions">
-        <button id="files-btn" class="topbar-btn" title="查看与下载本次会话文件">文件</button>
-        <button id="new-thread-btn" class="topbar-btn" title="开始一个全新的对话（清除当前上下文）· ⌘K">新建对话</button>
-        <button id="logout-btn" class="topbar-btn" title="退出登录">退出</button>
+    <!-- 左侧会话列表（SessionDB 中所有线程，全局） -->
+    <aside id="sidebar">
+      <div id="sidebar-head">
+        <span class="sidebar-brand"><span class="brand-dot"></span>会话</span>
+        <button id="sidebar-new-btn" class="sidebar-new-btn" title="新建对话 · ⌘K"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg><span>新建</span></button>
       </div>
-    </header>
-    <main id="chat-main">
-      <div id="messages"></div>
-      <div id="input-bar">
-        <textarea id="message-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" rows="1"></textarea>
-        <button id="send-btn" disabled><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg><span>发送</span></button>
-        <button id="stop-btn" style="display:none"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span>停止</span></button>
-      </div>
-    </main>
+      <div id="thread-list"></div>
+      <div id="sidebar-resizer" title="拖动调整宽度 · 双击复位"></div>
+    </aside>
+    <div id="sidebar-scrim"></div>
+
+    <div id="chat-area">
+      <div id="scroll-progress"></div>
+      <header id="topbar">
+        <div class="topbar-left">
+          <button id="sidebar-toggle" class="topbar-btn icon-btn" title="会话列表" aria-label="切换会话列表"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/></svg></button>
+          <div class="topbar-title"><span class="brand-dot"></span>Agent WebUI</div>
+        </div>
+        <div class="topbar-actions">
+          <button id="files-btn" class="topbar-btn" title="查看与下载本次会话文件">文件</button>
+          <button id="new-thread-btn" class="topbar-btn" title="开始一个全新的对话 · ⌘K">新建对话</button>
+          <button id="logout-btn" class="topbar-btn" title="退出登录">退出</button>
+        </div>
+      </header>
+      <main id="chat-main">
+        <div id="messages"></div>
+        <div id="input-bar">
+          <textarea id="message-input" placeholder="输入消息，Enter 发送，Shift+Enter 换行" rows="1"></textarea>
+          <button id="send-btn" disabled><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg><span>发送</span></button>
+          <button id="stop-btn" style="display:none"><svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><rect x="6" y="6" width="12" height="12" rx="2.5"/></svg><span>停止</span></button>
+        </div>
+      </main>
+    </div>
   </div>
 
   <!-- 文件面板（固定覆层，不依赖 chat-view 内部结构） -->
@@ -61,6 +77,7 @@
   <script src="render.js"></script>
   <script src="sse.js"></script>
   <script src="app.js"></script>
+  <script src="sidebar.js"></script>
   <script src="files.js"></script>
 </body>
 </html>

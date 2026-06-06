@@ -1,6 +1,8 @@
+import asyncio
 import io
 import json
 import os
+import sqlite3
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -53,9 +55,70 @@ def _sse(event: str, data) -> str:
     return f"event: {event}\ndata: {payload}\n\n"
 
 
+# 线程列表（SessionDB 中所有会话，全局，不按 API key 划分）=================
+def _distinct_thread_ids() -> list[str]:
+    """从 checkpoints.db 读所有不同的 thread_id；库/表不存在时返回空。"""
+    if not CHECKPOINT_DB.exists():
+        return []
+    conn = sqlite3.connect(str(CHECKPOINT_DB))
+    try:
+        cur = conn.execute("SELECT DISTINCT thread_id FROM checkpoints")
+        return [r[0] for r in cur.fetchall() if r[0]]
+    except sqlite3.OperationalError:
+        return []
+    finally:
+        conn.close()
+
+
+def _thread_title(msgs: list) -> str:
+    """取第一条用户消息前若干字符作为会话标题。"""
+    for m in msgs:
+        if getattr(m, "type", None) != "human":
+            continue
+        content = getattr(m, "content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                str(p.get("text", "")) if isinstance(p, dict) else str(p) for p in content
+            )
+        text = str(content or "").strip().replace("\n", " ")
+        if text:
+            return text[:48]
+    return ""
+
+
+async def _list_thread_summaries() -> list[dict]:
+    """列出 SessionDB 中所有线程概要（thread_id / title / message_count / updated_at），按最近活动降序。"""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    tids = await asyncio.to_thread(_distinct_thread_ids)
+    if not tids:
+        return []
+    out: list[dict] = []
+    async with AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB)) as saver:
+        for tid in tids:
+            tup = await saver.aget_tuple({"configurable": {"thread_id": tid}})
+            ckpt = (getattr(tup, "checkpoint", None) or {}) if tup else {}
+            msgs = ckpt.get("channel_values", {}).get("messages")
+            msgs = msgs if isinstance(msgs, list) else []
+            out.append({
+                "thread_id": tid,
+                "title": _thread_title(msgs),
+                "message_count": len(msgs),
+                "updated_at": ckpt.get("ts") or "",
+            })
+    out.sort(key=lambda x: x["updated_at"], reverse=True)
+    return out
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/threads", dependencies=[Depends(_auth)])
+async def list_threads() -> dict:
+    """列出 SessionDB 中所有会话线程（全局，不按 key 区分），供 WebUI 左侧列表使用。"""
+    return {"threads": await _list_thread_summaries()}
 
 
 @app.get("/threads/{thread_id}/messages", dependencies=[Depends(_auth)])

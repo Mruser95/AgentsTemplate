@@ -67,9 +67,8 @@ delete = _store.delete
 @tool
 async def search_long_memory(query: str, k: int = 5) -> list[dict]:
     """
-    向量检索当前会话（thread_id）的长期记忆库。
+    向量检索长期记忆库（全局共享，跨所有会话 / thread，不按 thread_id 隔离）。
     返回 top-k 条，每条含 id / content / memory_type / importance / context /
     tags / timestamp / similarity。
     """
-    from Tools.utils import current_thread_id
-    return await search_neighbors(query, k=k, thread_id=current_thread_id())
+    return await search_neighbors(query, k=k, thread_id=None)

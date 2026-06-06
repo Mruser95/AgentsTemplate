@@ -26,9 +26,13 @@ llm = ChatOpenAI(
 )
 
 
-NOTE_PATH = ROOT / "Memory" / "projectKnow.md"
 _LOCK = asyncio.Lock()
 _TAIL_LINES = 20  # 反馈给 LLM 用于判 new_task 与去重的最近行数
+
+
+def _note_path(tid: str) -> Path:
+    """每个用户线程独立的项目记忆文件，置于该线程的 SessionDB 目录下，避免不同项目互相串。"""
+    return ROOT / "SessionDB" / (tid or "_default") / "projectKnow.md"
 
 
 class ProjectKnowledgeBatch(BaseModel):
@@ -60,39 +64,42 @@ _chain = (
 )
 
 
-def read_notes() -> str:
-    """供 manager 系统提示词拼接使用。"""
-    if not NOTE_PATH.exists():
+def read_notes(tid: str) -> str:
+    """供 manager 系统提示词拼接使用（按用户线程隔离）。"""
+    p = _note_path(tid)
+    if not p.exists():
         return ""
-    return NOTE_PATH.read_text(encoding="utf-8").strip()
+    return p.read_text(encoding="utf-8").strip()
 
 
-def _read_tail() -> str:
-    if not NOTE_PATH.exists():
+def _read_tail(tid: str) -> str:
+    p = _note_path(tid)
+    if not p.exists():
         return ""
-    lines = NOTE_PATH.read_text(encoding="utf-8").splitlines()
+    lines = p.read_text(encoding="utf-8").splitlines()
     return "\n".join(lines[-_TAIL_LINES:])
 
 
-def _format(tid: str, notes: list[str]) -> str:
+def _format(notes: list[str]) -> str:
     ts = datetime.now().isoformat(timespec="seconds")
     out = []
     for n in notes:
         s = (n or "").strip().replace("\n", " ")
         if s:
-            out.append(f"- [{ts}] [{tid}] {s}\n")
+            out.append(f"- [{ts}] {s}\n")
     return "".join(out)
 
 
 async def _write(tid: str, notes: list[str], *, reset: bool) -> None:
-    block = _format(tid, notes)
+    block = _format(notes)
     if not block and not reset:
         return
+    p = _note_path(tid)
     async with _LOCK:
-        NOTE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        p.parent.mkdir(parents=True, exist_ok=True)
         mode = "w" if reset else "a"
         await asyncio.to_thread(
-            lambda: NOTE_PATH.open(mode, encoding="utf-8").write(block)
+            lambda: p.open(mode, encoding="utf-8").write(block)
         )
 
 
@@ -100,7 +107,7 @@ async def route_project(tid: str, new: list[BaseMessage], *, offset: int = 0, k:
     """从最近消息抽取项目记忆（执行流程 + 坑/方法/知识）；任务切换时清空旧记录后再写。"""
     if not new:
         return
-    existing = _read_tail()
+    existing = _read_tail(tid)
     batch: ProjectKnowledgeBatch = await _chain.ainvoke({
         "existing": existing or "(empty)",
         "transcript": get_buffer_string(new),

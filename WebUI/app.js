@@ -129,9 +129,12 @@ function showView(view) {
   } else if (view === 'chat') {
     if (authView) authView.style.display = 'none';
     if (chatView) chatView.style.display = '';
-    // 进入聊天视图时加载当前线程历史
+    // 进入聊天视图时加载当前线程历史 + 刷新左侧会话列表
     if (typeof loadThreadHistory === 'function') {
       loadThreadHistory();
+    }
+    if (typeof refreshThreadList === 'function') {
+      refreshThreadList();
     }
     var input = document.getElementById('message-input');
     if (input) input.focus();
@@ -327,6 +330,8 @@ function _finishStreaming(input) {
   _toolIndicators = {};
   _currentStreamController = null;
   if (typeof decorateAIBubbles === 'function') decorateAIBubbles();
+  // 一轮结束后刷新左侧会话列表（拾取新线程、更新标题与时间）
+  if (typeof refreshThreadList === 'function') refreshThreadList();
 }
 
 /**
@@ -383,23 +388,30 @@ function _bindLogout() {
 }
 
 /**
- * 绑定"新建对话"按钮
- * - 若当前有对话内容：弹出确认
- * - 重置 thread_id，清屏，显示空对话态
+ * 新建对话：生成新 thread_id、清屏、显示空对话态、刷新会话列表。
+ * 非破坏性——旧会话仍保留在左侧列表，可随时切回。
+ * 流式进行中忽略。
+ */
+function startNewThread() {
+  if (_currentStreamController) return;
+  resetThreadId();
+  var messagesEl = document.getElementById('messages');
+  if (messagesEl) messagesEl.innerHTML = '';
+  renderEmptyState();
+  if (typeof refreshThreadList === 'function') refreshThreadList();
+  var input = document.getElementById('message-input');
+  if (input) input.focus();
+}
+
+/**
+ * 绑定顶栏"新建对话"按钮（侧栏的"＋新建"在 sidebar.js 中绑定，复用 startNewThread）
  */
 function _bindNewThread() {
   var btn = document.getElementById('new-thread-btn');
   if (!btn) return;
   btn.addEventListener('click', function () {
     if (btn.disabled) return;
-    var messagesEl = document.getElementById('messages');
-    var hasContent = messagesEl && messagesEl.querySelector('.message');
-    if (hasContent && !window.confirm('新建对话将清除当前对话上下文，确定继续？')) return;
-    resetThreadId();
-    if (messagesEl) messagesEl.innerHTML = '';
-    renderEmptyState();
-    var input = document.getElementById('message-input');
-    if (input) input.focus();
+    startNewThread();
   });
 }
 
@@ -436,14 +448,14 @@ function _updateSendButtonState() {
  */
 function _setupScrollButton() {
   var container = document.getElementById('messages');
-  var chatView = document.getElementById('chat-view');
-  if (!container || !chatView) return;
+  var host = document.getElementById('chat-area') || document.getElementById('chat-view');
+  if (!container || !host) return;
 
   var btn = document.createElement('button');
   btn.id = 'scroll-bottom-btn';
   btn.setAttribute('aria-label', '回到底部');
   btn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
-  chatView.appendChild(btn);
+  host.appendChild(btn);
 
   btn.addEventListener('click', function () {
     container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });

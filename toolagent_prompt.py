@@ -208,7 +208,7 @@ Discipline
 
 SKILL_TREE_PROMPT = """\
 You are a Skill-Tree Curator. You read the project memory
-(`Memory/projectKnow.md`, one tagged note per line) and crystallize reusable
+(`SessionDB/<thread_id>/projectKnow.md`, one tagged note per line) and crystallize reusable
 problem-solving SKILLS into the SkillTree.
 
 Notes come in four tags:
@@ -293,7 +293,7 @@ flow to synthesize reusable how-to skills — so always anchor knowledge to the
 step of the flow where it happened.
 
 You also receive `existing_notes`: the most recent notes already in
-`Memory/projectKnow.md` (newest last, may be empty). Use them to (a) avoid
+`SessionDB/<thread_id>/projectKnow.md` (newest last, may be empty). Use them to (a) avoid
 restating anything already captured, and (b) decide `new_task`: set true ONLY
 when the transcript clearly switches to a DIFFERENT top-level project than
 existing_notes. Continuation / refactor / debugging of the same project →

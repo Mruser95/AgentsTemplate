@@ -289,15 +289,244 @@ input:focus-visible {
   animation: errorShake 0.45s var(--spring);
 }
 
-/* --- Chat View (single-thread, topbar + main column) --- */
+/* --- Chat View (sidebar + chat column) --- */
 #chat-view {
+  --sidebar-w: 264px;            /* 侧栏宽度：由 sidebar.js 拖拽手柄动态改写 */
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100vh;
   height: 100dvh;
   background: var(--ivory);
   position: relative;
   overflow: hidden;
+}
+
+/* 右侧聊天列（topbar 浮层 + 消息区 + 输入栏的定位上下文） */
+#chat-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* --- 左侧会话列表 Sidebar --- */
+#sidebar {
+  position: relative;            /* 作为拖拽手柄的定位上下文 */
+  flex: 0 0 var(--sidebar-w);
+  width: var(--sidebar-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: rgba(252, 252, 248, 0.72);
+  backdrop-filter: var(--glass-lite);
+  -webkit-backdrop-filter: var(--glass-lite);
+  border-right: 1px solid var(--border);
+  z-index: 150;
+  transition: margin-left 0.36s var(--spring);
+}
+
+#chat-view.sidebar-collapsed #sidebar {
+  margin-left: calc(var(--sidebar-w) * -1);
+}
+
+/* 右边缘拖拽手柄：调整侧栏宽度 */
+#sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 160;
+  touch-action: none;            /* 指针拖拽时不触发滚动 */
+}
+
+#sidebar-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 2px;
+  background: transparent;
+  transition: background 0.2s var(--ease);
+}
+
+#sidebar-resizer:hover::after,
+#chat-view.resizing #sidebar-resizer::after {
+  background: var(--accent-line);
+}
+
+/* 拖拽进行中：关闭过渡动画、禁止选中、全局光标 */
+#chat-view.resizing #sidebar { transition: none; }
+#chat-view.resizing,
+#chat-view.resizing * {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+#sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 16px 16px 12px;
+  flex-shrink: 0;
+}
+
+.sidebar-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--ink);
+  letter-spacing: 0.2px;
+}
+
+.sidebar-new-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: all 0.25s var(--spring);
+}
+
+.sidebar-new-btn:hover {
+  background: var(--accent-softer);
+  transform: translateY(-1px) scale(1.03);
+  box-shadow: var(--sh-xs);
+}
+
+.sidebar-new-btn:active { transform: scale(0.96); }
+.sidebar-new-btn svg { width: 13px; height: 13px; }
+
+#thread-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 10px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.thread-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s, transform 0.2s var(--spring);
+  animation: popIn 0.3s var(--spring) both;
+}
+
+.thread-item:hover {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: var(--border);
+}
+
+.thread-item.active {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: var(--accent-line);
+  box-shadow: var(--sh-xs);
+}
+
+.thread-item-title {
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thread-item.active .thread-item-title { color: var(--accent-ink); }
+
+.thread-item-meta {
+  font-size: 11.5px;
+  color: var(--ink-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thread-list-empty {
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--ink-mute);
+  font-size: 13px;
+}
+
+/* 顶栏左侧分组 + 侧栏开合按钮 */
+.topbar-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar-btn.icon-btn {
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 移动端遮罩：桌面端隐藏 */
+#sidebar-scrim { display: none; }
+
+@media (max-width: 900px) {
+  #sidebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    max-width: 86vw;             /* 桌面端拖宽后切到抽屉不至于占满屏 */
+    margin-left: 0;
+    box-shadow: var(--sh-lg);
+    transform: translateX(0);
+    transition: transform 0.36s var(--spring);
+  }
+
+  /* 抽屉模式不支持拖拽调宽 */
+  #sidebar-resizer { display: none; }
+
+  #chat-view.sidebar-collapsed #sidebar {
+    margin-left: 0;
+    transform: translateX(-100%);
+  }
+
+  #sidebar-scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 140;
+    background: rgba(40, 36, 28, 0.18);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    opacity: 1;
+    transition: opacity 0.3s var(--ease);
+  }
+
+  #chat-view.sidebar-collapsed #sidebar-scrim {
+    opacity: 0;
+    pointer-events: none;
+  }
 }
 
 /* --- Topbar (floating glass) --- */

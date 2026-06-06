@@ -74,7 +74,7 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 | **网络** | `tavily_search` | 单点公网查证 |
 | **浏览器** | `browser` | Playwright 动态页面 / SPA / 登录态（仅 retriever 使用） |
 | **RAG** | `knowledge_search` | Milvus hybrid (dense + BM25 jieba) + QueryFusion RRF + AutoMerging + 远端 Rerank |
-| **记忆** | `search_long_memory` / `search_short_memory` | 仅 retriever 调用；按 thread_id 隔离 |
+| **记忆** | `search_long_memory` / `search_short_memory` | 仅 retriever 调用；长期记忆全局共享（不分 thread），短期记忆按 thread_id 隔离 |
 | **状态** | `plan` / `todo` | plan.json（manager 写）/ workingTodo.md（tasker_coder 写，manager 只读） |
 | **质量门** | `linter` | py_compile / node --check / gcc -fsyntax-only / javac 等多语言语法关 |
 | **调度** | `schedule` | 创建 / 列出 / 删除 / 回看定时任务（仅 manager） |
@@ -106,7 +106,7 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 |---|---|
 | `short` | 读 checkpoint，自动压缩**较旧一半**消息为 `ShortMemoryEntry`（含 issues / decisions / errors / resolutions），并把对应 message 标记为 `SUMMARY_MARKER` 占位。 |
 | `long` | 从增量 transcript 抽取 `LongMemoryEntry`，再调 `collate_long_memory` 做插入 / 更新 / 删除 / 跳过的决策化整理。 |
-| `project` | 把"目标-上一步-这一步-效果-达成"以一句话追加到 `Memory/projectKnow.md`；任务切换时整体重置。 |
+| `project` | 把"目标-上一步-这一步-效果-达成"以一句话追加到 `SessionDB/<thread_id>/projectKnow.md`（按用户线程隔离，分开不同项目）；任务切换时整体重置。 |
 | `skills` | 扫描本批次用过的工具，更新 `Skills/<tool>_skill.md` 的 `## 探索经验` 列表（add / update / replace / remove）。 |
 | `skill_tree` | 从 `projectKnow.md` 提炼可复用技能，落到 `SkillTree/<category>/<name>.md`。 |
 

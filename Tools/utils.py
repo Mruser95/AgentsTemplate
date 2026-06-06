@@ -204,7 +204,7 @@ from langchain_core.messages import SystemMessage  # noqa: E402
 def project_know_text() -> str:
     try:
         from Memory.proj_agent import read_notes
-        notes = read_notes()
+        notes = read_notes(current_thread_id())
     except Exception:
         notes = ""
     if not notes:

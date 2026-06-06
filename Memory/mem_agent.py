@@ -19,7 +19,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from Memory import longMem, shortMem  # noqa: E402
-from Tools.utils import current_thread_id  # noqa: E402
 from toolagent_prompt import (  # noqa: E402
     LONG_CURATOR_PROMPT,
     LONG_MEMORY_PROMPT,
@@ -202,16 +201,15 @@ _long_chain = (
 @tool
 async def collate_long_memory(candidates: list[dict], k: int = 5) -> dict:
     """
-    长期记忆冲突整理 + 直接落库一体化（仅作用于当前 thread_id 的记忆）。
-    流程: 1) 按候选向量召回当前 thread_id 的 top-k 邻居；
+    长期记忆冲突整理 + 直接落库一体化（长期记忆全局共享，跨所有会话 / thread）。
+    流程: 1) 按候选向量全局召回 top-k 邻居；
          2) 喂决策 chain；3) 按 decisions 调用 longMem.store/update/delete。
     """
     if not candidates:
         return {"decisions": [], "results": []}
 
-    tid = current_thread_id()
     contents = [c["content"] for c in candidates]
-    existing = await longMem.search_neighbors(contents, k=k, thread_id=tid)
+    existing = await longMem.search_neighbors(contents, k=k, thread_id=None)
 
     batch: LongMemoryCurationBatch = await _long_chain.ainvoke({
         "candidates": json.dumps(candidates, ensure_ascii=False),
@@ -238,7 +236,7 @@ async def collate_long_memory(candidates: list[dict], k: int = 5) -> dict:
                     "tags": d.tags if d.tags is not None else cand.get("tags", []),
                     "timestamp": cand.get("timestamp") or datetime.now().isoformat(),
                 }
-                out["db_id"] = await longMem.store(row, thread_id=tid)
+                out["db_id"] = await longMem.store(row)
                 out["ok"] = True
             else:  # update / delete
                 if d.target_id is None or d.target_id not in valid_ids:
@@ -299,7 +297,4 @@ async def route_long(tid: str, new: list[BaseMessage], *, offset: int = 0, k: in
         d = e.model_dump() if hasattr(e, "model_dump") else dict(e)
         d["timestamp"] = datetime.now().isoformat()
         candidates.append(d)
-    await collate_long_memory.ainvoke(
-        {"candidates": candidates, "k": k},
-        config={"configurable": {"thread_id": tid}},
-    )
+    await collate_long_memory.ainvoke({"candidates": candidates, "k": k})
