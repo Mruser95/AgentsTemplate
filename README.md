@@ -79,7 +79,7 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 | **质量门** | `linter` | py_compile / node --check / gcc -fsyntax-only / javac 等多语言语法关 |
 | **调度** | `schedule` | 创建 / 列出 / 删除 / 回看定时任务（仅 manager） |
 | **MCP** | `mcp` | 通过 streamable-http 接入外部 MCP server（terminal / browser 扩展） |
-| **元能力** | `skill_library` | 加载工具规范文档（首次用前必查） |
+| **元能力** | `skill_library` / `skill_tree` | `skill_library` 加载工具规范文档（首次用前必查）；`skill_tree` 查阅 COLLATOR 沉淀的复用技能（按使用场景，仅 manager / tasker） |
 
 ## RAG / 知识库管道
 
@@ -108,7 +108,7 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 | `long` | 从增量 transcript 抽取 `LongMemoryEntry`，再调 `collate_long_memory` 做插入 / 更新 / 删除 / 跳过的决策化整理。 |
 | `project` | 把"目标-上一步-这一步-效果-达成"以一句话追加到 `SessionDB/<thread_id>/projectKnow.md`（按用户线程隔离，分开不同项目）；任务切换时整体重置。 |
 | `skills` | 扫描本批次用过的工具，更新 `Skills/<tool>_skill.md` 的 `## 探索经验` 列表（add / update / replace / remove）。 |
-| `skill_tree` | 从 `projectKnow.md` 提炼可复用技能，落到 `SkillTree/<category>/<name>.md`。 |
+| `skill_tree` | 从 `projectKnow.md` 提炼可复用技能，落到 `SkillTree/<category>/<name>.md`；每份带 frontmatter（`name` + `description`=使用场景），供 manager/tasker 用 `skill_tree` 工具按需查阅。 |
 
 并发受 `collation_max_parallel` 控制，失败按 `collation_retry_count` 重试，日志写 `Logs/collation/<tid>.jsonl`。
 

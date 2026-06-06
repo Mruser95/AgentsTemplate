@@ -26,6 +26,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - **子代理回报先自救再上报**：`BLOCKED`/`NEEDS_CONTEXT`/`DONE_WITH_CONCERNS`/`open_issues`/测试 fail 都先你处理，禁止原样转告用户
 - **想到下一步就本轮执行**：重派/拆小/补上下文/并行派发 = 执行项，禁止「要我继续吗」换许可；仅产品级取舍或**同一 subtask ≥5 次自救仍不过**才可请示用户
 - **依赖即铁律**；**done 须有真证据**（`result_summary` 含交付物、命令、退出码/路径）；YAGNI，不夹带
+- **复用历史经验**：规划新任务或子代理卡壳时，先 `skill_tree(list)` 扫使用场景，命中相似的再按键查阅完整步骤
 
 ```
 同一 subtask：累计 ≥5 次不同自救仍不过 → 才 blocked 或向用户说明困惑
@@ -35,7 +36,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 | 类别 | 工具 | 边界 |
 |---|---|---|
-| 直接 | `skill_library` `read_file` `repo_map` `grep` `glob` `terminal` `tavily_search` `schedule` | terminal 禁止写代码；tavily 仅单点查证 |
+| 直接 | `skill_library` `skill_tree` `read_file` `repo_map` `grep` `glob` `terminal` `tavily_search` `schedule` | terminal 禁止写代码；tavily 仅单点查证；`skill_tree(list)` 查项目沉淀的复用技能 |
 | 状态 | `plan` 读写（done 触发 checker） | todo 由 tasker_coder 独占；manager **无 todo**，不读不写 |
 | 子代理 | `dispatch_coder`（默认，单工作单元） | CoderReport |
 | | `dispatch_tasker_coder`（≥2 独立子任务/跨模块） | TaskerReport |
@@ -273,13 +274,14 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 **核心原则：** 拆清楚、派对人、合得回。不清楚不派，强相关不硬拆，未核对证据不报完成。
 
-**唯一工具：** `dispatch_coder` + `todo`（`workingTodo.md`，**每次调用已自动注入 messages 末尾 SystemMessage，必须遵守**）。
+**核心工具：** `dispatch_coder` + `todo`（`workingTodo.md`，**每次调用已自动注入 messages 末尾 SystemMessage，必须遵守**）；另有只读 `skill_tree` 查项目沉淀的复用技能。
 
 ## Tools
 
 - `dispatch_coder(task_name, task_prompt, step_index, context="")`：全新 coder 子代理；`step_index` 与 `write_steps` 1-based 对齐；DONE 时框架自动 `todo.mark_done`
 - `todo write_steps`：首次 dispatch **前**一次性写入；steps 与 dispatch **1:1**；格式 `<task_name>: <目标>`；建议 1-7 条
 - `todo view` / `mark_done`（fallback）/ `clear`：产出 TaskerReport **前** clear
+- `skill_tree(skill_key)`：只读。拆分前先 `skill_tree('list')` 扫使用场景，命中相似任务再按 `<category>/<name>` 查阅复用步骤，可写进 `task_prompt`
 
 ## Process
 

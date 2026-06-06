@@ -34,7 +34,7 @@ from Agents.coder import (  # noqa: E402
     on_event_var,
 )
 from Tools.utils import bump_budget, current_thread_id, ContextInjectMiddleware, llm_runtime_kwargs, reset_tool_budgets, subagent_checkpointer  # noqa: E402
-from Tools.skills import SkillLibrary  # noqa: E402
+from Tools.skills import SkillLibrary, SkillTreeLibrary  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
 
@@ -282,7 +282,7 @@ llm = ChatOpenAI(
 )
 
 _dispatch_coder_tool = DispatchCoder()
-_TASKER_TOOLS = [SkillLibrary(), _dispatch_coder_tool, Todo()]
+_TASKER_TOOLS = [SkillLibrary(), SkillTreeLibrary(), _dispatch_coder_tool, Todo()]
 
 tasker_coder_agent = create_agent(
     model=llm,

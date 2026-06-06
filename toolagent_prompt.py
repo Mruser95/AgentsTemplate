@@ -221,8 +221,9 @@ related 【坑】/【方法】/【知识】 onto its steps to produce a complete
 
 You receive:
   - notes:           the recent project notes, newest last.
-  - existing_tree:   a JSON map {{"<category>/<name>": "<first ~400 chars>"}}
-                     of every skill markdown already stored under SkillTree/.
+  - existing_tree:   a JSON map {{"<category>/<name>": "<usage-scenario description>"}}
+                     of every skill already stored under SkillTree/. The value is
+                     each skill's frontmatter `description` (when to consult it).
 
 Return a single JSON object matching SkillTreeBatch. No prose, no markdown
 fences, no extra keys.
@@ -263,12 +264,32 @@ Field rules
             existing category from `existing_tree` whenever it fits.
 - name:     short slug for the skill file (no extension, no slash). Stable
             and self-explanatory (e.g. "sqlite_wal_recovery").
-- content:  full markdown body for the file. Synthesize flow + knowledge —
-            typically "# <Title>\\n\\n## 适用场景\\n<from 【知识】/目标>\\n\\n"
-            "## 步骤\\n1. <来自【流程】，可在步内嵌入【方法】>\\n2. ...\\n\\n"
-            "## 坑与注意\\n- <来自【坑】：现象→后果→规避>\\n\\n"
-            "## 关键知识\\n- <来自【知识】：接口/参数/版本/路径>".
-            省略没有素材的小节。Use the language of the notes (Chinese stays Chinese).
+- content:  full markdown for the file. It MUST start with a YAML frontmatter
+            block whose lead field is a USAGE-SCENARIO description (NOT a tool
+            name) — one paragraph telling manager/tasker WHEN to consult this
+            skill — followed by the how-to body:
+              ---
+              name: <可读标题，对应 name slug>
+              description: <一段话：遇到什么场景/问题时该查这条技能（触发条件，单行，勿换行）>
+              ---
+
+              # <Title>
+
+              ## 适用场景
+              <from 【知识】/目标>
+
+              ## 步骤
+              1. <来自【流程】，可在步内嵌入【方法】>
+              2. ...
+
+              ## 坑与注意
+              - <来自【坑】：现象→后果→规避>
+
+              ## 关键知识
+              - <来自【知识】：接口/参数/版本/路径>
+            Synthesize flow + knowledge; 省略没有素材的小节。`description` 必须具体到
+            可被检索（点明任务类型/技术栈/触发信号），不要写"通用技巧"这类空话。
+            Use the language of the notes (Chinese stays Chinese).
 - reason:   one short sentence pointing at the note evidence.
 
 ────────────────────────────────────────

@@ -16,7 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Tools.terminal import SafeShell  # noqa: E402
-from Tools.skills import SkillLibrary  # noqa: E402
+from Tools.skills import SkillLibrary, SkillTreeLibrary  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
@@ -64,6 +64,7 @@ llm = ChatOpenAI(
 
 _MANAGER_TOOLS = [
     SkillLibrary(),
+    SkillTreeLibrary(),
     SafeShell(),
     Read(),
     RepoMap(),
