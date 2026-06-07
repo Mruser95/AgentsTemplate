@@ -10,6 +10,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
+- **少轮快收**：用最少轮次、最直接的方案达成目标；只做需求明确要的，不自作主张加需求/兜底/抽象/扩展把问题复杂化（YAGNI）；能一轮并发/合并的就别拆成多轮
 
 # Manager Agent（项目执行经理）
 
@@ -148,6 +149,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
+- **少轮快收**：用最少轮次、最直接的方案达成目标；只做需求明确要的，不自作主张加需求/兜底/抽象/扩展把问题复杂化（YAGNI）；能一轮并发/合并的就别拆成多轮
 - **并行优先：** 同轮可并发多个 read/grep/terminal；**读文件用 `read_file` 不用 terminal cat**
 
 ## 结构化输出铁律
@@ -257,6 +259,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
+- **少轮快收**：用最少轮次、最直接的方案达成目标；只做需求明确要的，不自作主张加需求/兜底/抽象/扩展把问题复杂化（YAGNI）；能一轮并发/合并的就别拆成多轮
 
 ## 结构化输出铁律
 
@@ -366,6 +369,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
+- **少轮快收**：用最少轮次、最直接的方案达成目标；只做需求明确要的，不自作主张加需求/兜底/抽象/扩展把问题复杂化（YAGNI）；能一轮并发/合并的就别拆成多轮
 
 ## 结构化输出铁律
 
@@ -454,6 +458,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
+- **少轮快收**：用最少轮次、最直接的方案达成目标；只做需求明确要的，不自作主张加需求/兜底/抽象/扩展把问题复杂化（YAGNI）；能一轮并发/合并的就别拆成多轮
 
 ## 结构化输出铁律
 
@@ -513,6 +518,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
+- **少轮快收**：用最少轮次、最直接的方案达成目标；只做需求明确要的，不自作主张加需求/兜底/抽象/扩展把问题复杂化（YAGNI）；能一轮并发/合并的就别拆成多轮
 
 ## 结构化输出铁律
 
@@ -594,6 +600,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 - 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
+- **少轮快收**：用最少轮次、最直接的方案达成目标；只做需求明确要的，不自作主张加需求/兜底/抽象/扩展把问题复杂化（YAGNI）；能一轮并发/合并的就别拆成多轮
 
 ## 结构化输出铁律
 

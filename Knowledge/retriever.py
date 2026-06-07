@@ -11,7 +11,6 @@ from langchain_core.tools import BaseTool
 
 import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from Knowledge.createIndex import get_index # noqa: E402
 from Tools.utils import bump_budget, current_thread_id  # noqa: E402
 
 
@@ -41,6 +40,7 @@ def _get_retriever():
     if auto_merging_retriever is not None:
         return auto_merging_retriever
 
+    from Knowledge.createIndex import get_index
     index, sc = get_index()
     base_retriever = VectorIndexRetriever(
         index=index,

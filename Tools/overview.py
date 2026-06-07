@@ -24,6 +24,7 @@ with open(PROJECT_ROOT / "config.yaml", "r", encoding="utf-8") as _f:
 RM_LIMIT: int = int(_cfg.get("repo_map_count_limit", 20))
 RM_TOP_N: int = int(_cfg.get("repo_map_top_n", 20))
 RM_MAX_SYMS: int = int(_cfg.get("repo_map_max_symbols", 25))
+RM_MAX_LISTED: int = int(_cfg.get("repo_map_max_listed", 80))
 GREP_LIMIT: int = int(_cfg.get("grep_count_limit", 30))
 GREP_MAX_RESULTS: int = int(_cfg.get("grep_max_results", 80))
 GREP_MAX_PER_FILE: int = int(_cfg.get("grep_max_per_file", 10))
@@ -132,7 +133,7 @@ def _mod_key(rel_path: str) -> str:
     return mod.replace("/", ".")
 
 
-def _build_repo_map(root: Path, top_n: int, max_syms: int) -> str:
+def _build_repo_map(root: Path, top_n: int, max_syms: int, max_listed: int = RM_MAX_LISTED) -> str:
     files = sorted(_iter_files(root, ".py"))
     if not files:
         return f"未在 {root} 下找到 .py 文件。"
@@ -165,6 +166,7 @@ def _build_repo_map(root: Path, top_n: int, max_syms: int) -> str:
         f"展开 {min(top_n, len(files))} / {len(files)}",
         "",
     ]
+    listed, omitted = 0, 0
     for f in ranked:
         rel, sc, sigs = rel_of[f], scores.get(mod_of[f], 0.0), sigs_of[f]
         if f in top:
@@ -173,8 +175,13 @@ def _build_repo_map(root: Path, top_n: int, max_syms: int) -> str:
             if len(sigs) > max_syms:
                 out.append(f"  ... (+{len(sigs) - max_syms} more)")
             out.append("")
-        else:
+        elif listed < max_listed:
             out.append(f"- {rel}  (rank={sc:.4f}, {len(sigs)} symbols)")
+            listed += 1
+        else:
+            omitted += 1
+    if omitted:
+        out.append(f"- …（+{omitted} 个低相关文件已省略；用 path= 缩小范围或 grep 精确定位后再 read_file）")
     return "\n".join(out)
 
 
