@@ -21,6 +21,7 @@ services:
       - ../Logs:/app/Logs
       - ../Memory:/app/Memory
       - ../Knowledge:/app/Knowledge
+      - ../BuiltAgents:/app/BuiltAgents
     depends_on:
       milvus:
         condition: service_healthy

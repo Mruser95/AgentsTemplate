@@ -28,6 +28,7 @@ from Tools.utils import (  # noqa: E402
     llm_runtime_kwargs,
     reset_tool_budgets,
 )
+from CompLib.library import ComponentLibrary  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
 from Agents.coder import dispatch_coder  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
@@ -73,6 +74,7 @@ _MANAGER_TOOLS = [
     TavilySearch(),
     Schedule(),
     Plan(),
+    ComponentLibrary(),
     retrieve,
     dispatch_coder,
     dispatch_tasker_coder,
