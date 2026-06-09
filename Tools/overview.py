@@ -25,6 +25,7 @@ RM_LIMIT: int = int(_cfg.get("repo_map_count_limit", 20))
 RM_TOP_N: int = int(_cfg.get("repo_map_top_n", 20))
 RM_MAX_SYMS: int = int(_cfg.get("repo_map_max_symbols", 25))
 RM_MAX_LISTED: int = int(_cfg.get("repo_map_max_listed", 80))
+RM_MAX_CHARS: int = int(_cfg.get("repo_map_max_chars", 24000))  # 整体输出硬上限：超出从尾部截断（top_n 展开块在前，最有价值），兜底防超大 repo_map 灌爆历史
 GREP_LIMIT: int = int(_cfg.get("grep_count_limit", 30))
 GREP_MAX_RESULTS: int = int(_cfg.get("grep_max_results", 80))
 GREP_MAX_PER_FILE: int = int(_cfg.get("grep_max_per_file", 10))
@@ -133,7 +134,21 @@ def _mod_key(rel_path: str) -> str:
     return mod.replace("/", ".")
 
 
-def _build_repo_map(root: Path, top_n: int, max_syms: int, max_listed: int = RM_MAX_LISTED) -> str:
+def _truncate_to_chars(text: str, max_chars: int) -> str:
+    """整体输出超过 max_chars 时从尾部按行截断（top_n 展开块在前，最有价值，保头丢尾），并加一行明确提示。"""
+    if max_chars <= 0 or len(text) <= max_chars:
+        return text
+    note = f"\n... [repo_map 输出超过 {max_chars} 字符已从尾部截断；用 path= 缩小范围或 grep 精确定位后再 read_file]"
+    budget = max(max_chars - len(note), 0)
+    head = text[:budget]
+    cut = head.rfind("\n")  # 回退到上一个完整行边界，避免截在半行
+    if cut > 0:
+        head = head[:cut]
+    return head + note
+
+
+def _build_repo_map(root: Path, top_n: int, max_syms: int, max_listed: int = RM_MAX_LISTED,
+                    max_chars: int = RM_MAX_CHARS) -> str:
     files = sorted(_iter_files(root, ".py"))
     if not files:
         return f"未在 {root} 下找到 .py 文件。"
@@ -182,7 +197,7 @@ def _build_repo_map(root: Path, top_n: int, max_syms: int, max_listed: int = RM_
             omitted += 1
     if omitted:
         out.append(f"- …（+{omitted} 个低相关文件已省略；用 path= 缩小范围或 grep 精确定位后再 read_file）")
-    return "\n".join(out)
+    return _truncate_to_chars("\n".join(out), max_chars)
 
 
 class RepoMapInput(BaseModel):

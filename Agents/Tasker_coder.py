@@ -2,9 +2,8 @@ from typing import Any, Literal, Type
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from openai import LengthFinishReasonError
 from pathlib import Path
 from pydantic import BaseModel, Field, PrivateAttr
 from dotenv import load_dotenv
@@ -33,7 +32,7 @@ from Agents.coder import (  # noqa: E402
     invoke_with_lint_gate,
     on_event_var,
 )
-from Tools.utils import bump_budget, current_thread_id, ContextInjectMiddleware, llm_runtime_kwargs, reset_tool_budgets, subagent_checkpointer  # noqa: E402
+from Tools.utils import asalvage_structured, bump_budget, current_thread_id, ContextInjectMiddleware, llm_runtime_kwargs, reset_tool_budgets, salvage_structured, subagent_checkpointer  # noqa: E402
 from Tools.skills import SkillLibrary, SkillTreeLibrary  # noqa: E402
 from Tools.todo import Todo  # noqa: E402
 from agents_prompt import tasker_coder_prompt  # noqa: E402
@@ -334,26 +333,90 @@ def _finalize_tasker_report(report: Any) -> str:
     return fallback.model_dump_json(indent=2)
 
 
+_TASKER_DIGEST_KEEP = 12  # salvage 时最多保留多少条 dispatch_coder 结果摘录，避免把全量轨迹原样重发再次撞预算墙
+
+_TASKER_SALVAGE_INSTRUCTION = (
+    "以上是一个 tasker_coder 子代理的执行轨迹摘录——它因为调用预算耗尽或输出被截断，"
+    "没来得及产出结构化 TaskerReport。请**严格基于上面各 dispatch_coder 子任务的真实结果**，"
+    "把这次执行归纳成一份 TaskerReport：哪些子任务已完成（DONE）、哪些 BLOCKED / 出错及其错误原因"
+    "（这些就是导致 tasker 没跑完的关键），整体完成到什么程度。overall_status 据实填写：有子任务"
+    "未完成或验证证据缺失时不得填 '全部完成'，至少降级为 '部分完成' 或 '需用户介入'；subtasks 按各 "
+    "dispatch_coder 结果如实列出；user_needs_attention 写清导致中断的错误与还差哪些子任务，方便下一轮接着推进。"
+)
+
+
+def _tasker_trajectory_digest(messages: list) -> str:
+    """从 tasker 轨迹里抽出可救回的事实：各 dispatch_coder 的 CoderReport 摘录、最近 todo 状态、最后思考。"""
+    coder_reports: list[str] = []
+    todo_snapshot = ""
+    last_text = ""
+    for m in messages or []:
+        content = getattr(m, "content", "")
+        text = content if isinstance(content, str) else str(content)
+        if isinstance(m, AIMessage) and text.strip():
+            last_text = text.strip()  # 取最后一段非空 tasker 思考
+        elif isinstance(m, ToolMessage):
+            name = getattr(m, "name", "") or ""
+            if name == "dispatch_coder":
+                coder_reports.append(text)
+            elif name == "todo":
+                todo_snapshot = text
+    parts: list[str] = []
+    if coder_reports:
+        joined = "\n\n".join(r[:1500] for r in coder_reports[-_TASKER_DIGEST_KEEP:])
+        parts.append("=== 各 dispatch_coder 子任务结果（CoderReport 摘录）===\n" + joined)
+    if todo_snapshot:
+        parts.append("=== 最近 todo 状态 ===\n" + todo_snapshot[:1000])
+    if last_text:
+        parts.append("=== tasker 中断前最后思考 ===\n" + last_text[:500])
+    return "\n\n".join(parts)
+
+
+def _tasker_salvage_payload(messages: list) -> list | None:
+    """把轨迹压成纯文本摘要 + salvage 指令，避开 tool_call 配对问题；无任何子任务产出时返回 None。"""
+    digest = _tasker_trajectory_digest(messages)
+    if not digest:
+        return None
+    return [HumanMessage(content=digest), HumanMessage(content=_TASKER_SALVAGE_INSTRUCTION)]
+
+
+def _salvage_tasker_report(messages: list) -> TaskerReport | None:
+    return salvage_structured(_tasker_salvage_payload(messages), llm, TaskerReport)
+
+
+async def _asalvage_tasker_report(messages: list) -> TaskerReport | None:
+    return await asalvage_structured(_tasker_salvage_payload(messages), llm, TaskerReport)
+
+
 def _dispatch_tasker_coder_sync(task_prompt: str) -> str:
     reset_tool_budgets(_TASKER_TOOLS)  # 每次进入 tasker_coder 重置工具配额（含 dispatch_coder 派发预算）
     try:
         state = tasker_coder_agent.invoke(
             {"messages": [HumanMessage(content=task_prompt)]}
         )
-    except LengthFinishReasonError:
+    except Exception:  # 顶层兜底：截断 / 网络 / API 异常统一收口，拿不到 state 就交给 salvage / fallback stub
         state = {}
-    return _finalize_tasker_report(state.get("structured_response"))
+    report = state.get("structured_response")
+    if not isinstance(report, TaskerReport):  # 预算耗尽 / 截断没走完结构化输出：强制一次 llm 从 coder 报告里救回进展
+        report = _salvage_tasker_report(state.get("messages") or [])
+    return _finalize_tasker_report(report)
 
 
 async def _dispatch_tasker_coder_inner(task_prompt: str) -> str:
     reset_tool_budgets(_TASKER_TOOLS)  # 每次进入 tasker_coder 重置工具配额（含 dispatch_coder 派发预算）
     on_event = on_event_var.get()
-    state = await astream_collect_final_state(
-        tasker_coder_agent,
-        [HumanMessage(content=task_prompt)],
-        on_event=on_event,
-    )
-    return _finalize_tasker_report(state.get("structured_response"))
+    try:
+        state = await astream_collect_final_state(
+            tasker_coder_agent,
+            [HumanMessage(content=task_prompt)],
+            on_event=on_event,
+        )
+        report = state.get("structured_response")
+        if not isinstance(report, TaskerReport):  # 预算耗尽 / 截断没走完结构化输出：强制一次 llm 从 coder 报告里救回进展
+            report = await _asalvage_tasker_report(state.get("messages") or [])
+    except Exception:  # 顶层兜底：任何未被内部捕获的异常都收成 fallback TaskerReport，不冒泡给上层 manager
+        report = None
+    return _finalize_tasker_report(report)
 
 
 async def adispatch_tasker_coder(
