@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Type
@@ -71,7 +72,7 @@ class ComponentLibrary(BaseTool):
         return body
 
     async def _arun(self, component: str) -> str:
-        return self._run(component)
+        return await asyncio.to_thread(self._run, component)  # 目录扫描/读盘不阻塞 event loop
 
 
 if __name__ == "__main__":

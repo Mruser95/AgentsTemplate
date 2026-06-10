@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 from typing import Type
@@ -117,4 +118,4 @@ class Read(BaseTool):
         return f"{body}\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
 
     async def _arun(self, path: str, offset: int | None = None, limit: int | None = None) -> str:
-        return self._run(path, offset, limit)
+        return await asyncio.to_thread(self._run, path, offset, limit)  # 文件 IO 不阻塞 event loop

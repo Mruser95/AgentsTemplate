@@ -155,24 +155,30 @@ class CollationScheduler:
                     self._counts[tid] = 0
                     return
                 routes = self._ensure_routes()
-                await asyncio.gather(*(self._run(tid, name, fn, new, offset=last) for name, fn in routes))
-                post = await self.message_source(tid)
-                await asyncio.to_thread(self.cursor.save, tid, len(post))
+                oks = await asyncio.gather(*(self._run(tid, name, fn, new, offset=last) for name, fn in routes))
+                ok_all = all(oks)
+                if ok_all:
+                    # 任一 route 重试耗尽仍失败 → 不推进游标，下一轮重放整段增量，避免增量被永久跳过
+                    post = await self.message_source(tid)
+                    await asyncio.to_thread(self.cursor.save, tid, len(post))
                 self._counts[tid] = 0
-                self.logger.log(tid, route="collate", ok=True, new_messages=len(new))
+                self.logger.log(tid, route="collate", ok=ok_all, new_messages=len(new))
             except Exception:
                 self.logger.log(tid, route="collate", ok=False, error=traceback.format_exc())
 
-    async def _run(self, tid: str, name: str, fn: RouteFn, new: list, *, offset: int) -> None:
+    async def _run(self, tid: str, name: str, fn: RouteFn, new: list, *, offset: int) -> bool:
         for attempt in range(1, self._retries + 2):
             try:
                 await fn(tid, new, offset=offset, k=self._k)
+            except asyncio.CancelledError:
+                raise
             except BaseException:
                 final = attempt > self._retries
                 self.logger.log(tid, route=name, ok=False, error=traceback.format_exc(),
                                 attempt=attempt, retrying=not final)
                 if final:
-                    return
+                    return False
                 continue
             self.logger.log(tid, route=name, ok=True, attempt=attempt)
-            return
+            return True
+        return False

@@ -1,3 +1,4 @@
+import asyncio
 import os, httpx
 from llama_index.core import Settings
 from llama_index.core.retrievers import VectorIndexRetriever, QueryFusionRetriever
@@ -108,7 +109,8 @@ class KnowledgeSearch(BaseTool):
         return "\n\n".join(parts) + f"\n\n[Tool call {n}/{self.max_tool_calls}, remaining: {rem}]"
 
     async def _arun(self, query: str) -> str:
-        return self._run(query)
+        # 同步 httpx + 同步 retrieve（单 query 可达 20s）放工作线程，避免阻塞整个 event loop
+        return await asyncio.to_thread(self._run, query)
 
 
 if __name__ == "__main__":

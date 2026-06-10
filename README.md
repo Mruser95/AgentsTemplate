@@ -44,7 +44,7 @@
 | **TESTER** | [Agents/tester.py](Agents/tester.py) | `dispatch_tester` 产 `TestDatasets.json`；`dispatch_test_runner` 跑全量用例出 `TestReport`。 |
 | **RETIRVER** | [Agents/retriver.py](Agents/retriver.py) | 唯一深度搜索 agent，跨源融合：长/短期记忆、知识库、Tavily、Playwright。 |
 | **CHECKER** | [Agents/checker.py](Agents/checker.py) | subtask done 时强制触发的对齐评估；`CheckerReport` 决定是否放行。 |
-| **COLLATOR** | [schedule.py](schedule.py) + [Memory/](Memory/) + [SkillTree/](SkillTree/) | 后台调度器：按 `collation_turn_threshold` 触发 short / long / project / skills / skill_tree 五路。 |
+| **COLLATOR** | [schedule.py](schedule.py) + [Memory/](Memory/) + [SkillTree/](SkillTree/) | 后台调度器：按 `collation_turn_threshold` 触发 short / long / project / skills 四路。 |
 
 ## 工具一览
 
@@ -74,17 +74,16 @@ manager 与各子代理共享一套受预算约束的工具集（配额见 [conf
 
 ## 后台 COLLATOR
 
-`CollationScheduler` 在 manager 每次工具调用后 `notify(thread_id, delta)` 累计活动消息；满 `collation_turn_threshold`（默认 20）即并发触发 5 路整理：
+`CollationScheduler` 在 manager 每次工具调用后 `notify(thread_id, delta)` 累计活动消息；满 `collation_turn_threshold`（默认 20）即并发触发 4 路整理：
 
 | route | 行为 |
 |---|---|
 | `short` | 读 checkpoint，自动压缩**较旧一半**消息为 `ShortMemoryEntry`（含 issues / decisions / errors / resolutions），并把对应 message 标记为 `SUMMARY_MARKER` 占位。 |
 | `long` | 从增量 transcript 抽取 `LongMemoryEntry`，再调 `collate_long_memory` 做插入 / 更新 / 删除 / 跳过的决策化整理。 |
 | `project` | 把"目标-上一步-这一步-效果-达成"以一句话追加到 `SessionDB/<thread_id>/projectKnow.md`（按用户线程隔离，分开不同项目）；任务切换时整体重置。 |
-| `skills` | 用本批次 transcript 提炼教训，改进 `SkillTree/<category>/<name>.md` 中已有技能（update 为主，确有新技能才 insert）。 |
-| `skill_tree` | 从 `projectKnow.md` 提炼可复用技能，落到 `SkillTree/<category>/<name>.md`。 |
+| `skills` | 一次 LLM 调用合并维护 SkillTree：用本批次 transcript 教训 + `projectKnow.md` 流程，update 改进已有技能为主，确有新技能才 insert，落 `SkillTree/<category>/<name>.md`。 |
 
-并发受 `collation_max_parallel` 控制，失败按 `collation_retry_count` 重试，日志写 `Logs/collation/<tid>.jsonl`。
+并发受 `collation_max_parallel` 控制，失败按 `collation_retry_count` 重试，日志写 `Logs/collation/<tid>.jsonl`。任一路重试耗尽仍失败则**不推进 cursor**（short 也不压缩），下一轮从原位置重放增量，保证不丢记忆。
 
 ## 快速开始
 

@@ -27,6 +27,7 @@ from Tools.utils import (  # noqa: E402
     is_summary_message,
     llm_runtime_kwargs,
     reset_tool_budgets,
+    workspace_info,
 )
 from CompLib.library import ComponentLibrary  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
@@ -103,7 +104,8 @@ class _ManagerBudgetReminder(AgentMiddleware):
         return request.override(messages=list(request.messages) + [SystemMessage(content=text)])
 
 _MANAGER_MIDDLEWARE = [
-    ContextInjectMiddleware(workspace=True, project_know=True, plan=True),
+    # workspace 是 per-thread 静态文本，已拼进 system_prompt（前缀缓存友好），不再每次 model call 重发
+    ContextInjectMiddleware(project_know=True, plan=True),
     _ManagerBudgetReminder(run_limit=manager_run_call_limit),
     ModelCallLimitMiddleware(
         run_limit=manager_run_call_limit,
@@ -112,10 +114,11 @@ _MANAGER_MIDDLEWARE = [
 ]
 
 def _build_manager_agent(checkpointer: Any = None, thread_id: str | None = None):
+    system_prompt = manager_prompt + (f"\n\n{workspace_info(thread_id)}" if thread_id else "")
     return create_agent(
         model=llm,
         tools=_MANAGER_TOOLS,
-        system_prompt=manager_prompt,
+        system_prompt=system_prompt,
         middleware=_MANAGER_MIDDLEWARE,
         checkpointer=checkpointer,
     )

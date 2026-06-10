@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import fnmatch
 import re
 import sys
@@ -221,7 +222,7 @@ class RepoMap(_Scoped):
         return self._gated(path, lambda root: _build_repo_map(root, top_n, max_symbols_per_file))
 
     async def _arun(self, path: str = "", top_n: int = RM_TOP_N, max_symbols_per_file: int = RM_MAX_SYMS) -> str:
-        return self._run(path, top_n, max_symbols_per_file)
+        return await asyncio.to_thread(self._run, path, top_n, max_symbols_per_file)  # 全仓 AST 扫描不阻塞 event loop
 
 
 # Grep ==================================================================
@@ -304,7 +305,7 @@ class Grep(_Scoped):
     async def _arun(self, pattern: str, path: str = "", glob: str = "", regex: bool = False,
                     ignore_case: bool = False,
                     max_results: int = GREP_MAX_RESULTS, max_per_file: int = GREP_MAX_PER_FILE) -> str:
-        return self._run(pattern, path, glob, regex, ignore_case, max_results, max_per_file)
+        return await asyncio.to_thread(self._run, pattern, path, glob, regex, ignore_case, max_results, max_per_file)
 
 
 # Glob ==================================================================
@@ -344,4 +345,4 @@ class Glob(_Scoped):
         return self._gated(path, lambda root: _do_glob(root, pattern, max_results))
 
     async def _arun(self, pattern: str, path: str = "", max_results: int = GLOB_MAX_RESULTS) -> str:
-        return self._run(pattern, path, max_results)
+        return await asyncio.to_thread(self._run, pattern, path, max_results)

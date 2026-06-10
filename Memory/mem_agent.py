@@ -260,6 +260,9 @@ async def collate_long_memory(candidates: list[dict], k: int = 5) -> dict:
 # routes =====================================================================
 
 
+_COMPRESS_MAX_MSGS = 80  # 单次压缩消息数上限：防积压时把超长历史一次塞进 prompt（稳态约 2×触发阈值，剩余留待下轮）
+
+
 async def route_short(tid: str, *_args, **_kwargs) -> None:
     from Tools.utils import compress_ckpt_messages, is_summary_message, read_ckpt_msgs
     msgs = await read_ckpt_msgs(tid)
@@ -267,7 +270,7 @@ async def route_short(tid: str, *_args, **_kwargs) -> None:
     half = len(fresh) // 2
     if half <= 0:
         return
-    target = fresh[:half]
+    target = fresh[:min(half, _COMPRESS_MAX_MSGS)]
 
     entry = await _short_chain.ainvoke({"transcript": get_buffer_string(target)})
     payload = entry.model_dump()
@@ -278,12 +281,15 @@ async def route_short(tid: str, *_args, **_kwargs) -> None:
         ls, le = 1, len(target)
     payload["turn_range"] = (ls, le)
     payload["timestamp"] = datetime.now().isoformat()
-    await shortMem.store(payload, thread_id=tid)
+    sid = await shortMem.store(payload, thread_id=tid)
     try:
         ids = [getattr(m, "id", None) for m in target]
         await compress_ckpt_messages(tid, ids, payload.get("summary") or "")
     except Exception:
-        pass
+        # 压缩失败必须让本 route 整体失败（回滚已入库摘要后上抛）：
+        # 否则摘要已入库而 checkpoint 未压缩，下一轮会对同一段消息重复抽取入库。
+        await shortMem.delete(sid)
+        raise
 
 
 async def route_long(tid: str, new: list[BaseMessage], *, offset: int = 0, k: int = 5) -> None:

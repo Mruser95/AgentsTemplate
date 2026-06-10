@@ -316,6 +316,38 @@ class Plan(BaseTool):
 
 
 # Plan 自动注入（manager 每次 model call，messages 末尾追加 SystemMessage）====
+# 注入是逐次重发的（不进 checkpoint），大 plan 全量注入 = 每次 model call 重复烧 input token；
+# 超过阈值改注「摘要视图」：plan 头部 + 各 milestone 状态行 + 当前 milestone 完整 JSON。
+
+
+_PLAN_FULL_MAX_CHARS = 1500  # plan JSON 不超过该长度时仍全量注入（小 plan 摘要不划算）
+
+
+def _plan_digest(plan: dict) -> str:
+    milestones = plan.get("milestones") or []
+    cur = (next((m for m in milestones if m.get("status") == "in_progress"), None)
+           or next((m for m in milestones if m.get("status") == "pending"), None))
+    head = {k: v for k, v in plan.items() if k != "milestones"}
+    lines: list[str] = []
+    for m in milestones:
+        if m is cur:
+            lines.append(
+                f"- {m.get('id', '?')} [{m.get('status', '?')}] ← 当前 milestone，完整内容：\n"
+                f"```json\n{json.dumps(m, ensure_ascii=False, indent=2)}\n```"
+            )
+        else:
+            subs = m.get("subtasks") or []
+            done = sum(1 for s in subs if s.get("status") == "done")
+            title = m.get("title") or m.get("name") or ""
+            lines.append(f"- {m.get('id', '?')} [{m.get('status', '?')}] {title}（subtasks done {done}/{len(subs)}）")
+    return (
+        "## 当前 plan.json（自动注入 · 摘要视图 · 权威 · 必须遵守）\n\n"
+        "plan 是唯一事实源，不得偏离 goal / constraints / subtask 拓扑。以下为 plan 头部 + "
+        "milestone 状态总览 + 当前 milestone 完整内容；需要其它 milestone 的完整字段时再 "
+        "plan(action='read')。\n\n"
+        f"```json\n{json.dumps(head, ensure_ascii=False, indent=2)}\n```\n"
+        + "\n".join(lines)
+    )
 
 
 def plan_inject_text() -> str:
@@ -325,9 +357,12 @@ def plan_inject_text() -> str:
             "## 当前 plan.json（自动注入 · 权威 · 必须遵守）\n\n"
             "(plan.json 为空 / 不存在 / 非法 JSON)"
         )
-    return (
-        "## 当前 plan.json（自动注入 · 权威 · 必须遵守）\n\n"
-        "以下 plan 是唯一事实源，不得偏离 goal / constraints / subtask 拓扑；"
-        "无需重复 plan(action='read')。\n\n"
-        f"```json\n{json.dumps(plan, ensure_ascii=False, indent=2)}\n```"
-    )
+    full = json.dumps(plan, ensure_ascii=False, indent=2)
+    if len(full) <= _PLAN_FULL_MAX_CHARS or not plan.get("milestones"):
+        return (
+            "## 当前 plan.json（自动注入 · 权威 · 必须遵守）\n\n"
+            "以下 plan 是唯一事实源，不得偏离 goal / constraints / subtask 拓扑；"
+            "无需重复 plan(action='read')。\n\n"
+            f"```json\n{full}\n```"
+        )
+    return _plan_digest(plan)

@@ -70,7 +70,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 ### 生命周期：Drafting → Ready → Executing
 
-每次启动：**workspace / projectKnow / plan 已自动注入到 messages 末尾（SystemMessage，权威，必须遵守）**；仅怀疑不一致时再 `plan(action='read')` 核对。
+每次启动：**workspace 规则在系统提示里；projectKnow / plan 已自动注入到 messages 末尾（SystemMessage，权威，必须遵守）**。plan 较大时注入的是摘要视图（头部 + 状态总览 + 当前 milestone 完整内容）；需要其它 milestone 完整字段或怀疑不一致时再 `plan(action='read')`。
 
 **Drafting：** 探索上下文 → 澄清（多选+倾向，禁空白题）→ `plan(write)` → 自审 → 用户确认 → `ready`。
 ! 如果已经有了任务强相关的plan则可能是没有完成的半截任务，应探索上下文与项目，看看完成到哪一步了，需不需要调整plan再继续。

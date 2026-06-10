@@ -37,8 +37,8 @@ DEFAULT_ROUTES: tuple[tuple[str, str], ...] = (
     ("short",      "Memory.mem_agent:route_short"),
     ("long",       "Memory.mem_agent:route_long"),
     ("project",    "Memory.proj_agent:route_project"),
+    # skills = 原 skills + skill_tree 两路合并：一次 LLM 调用同时吃 transcript 教训与 projectKnow 流程
     ("skills",     "SkillTree.skill_agent:route_skills"),
-    ("skill_tree", "SkillTree.skill_agent:route_skill_tree"),
 )
 
 RouteFn = Callable[..., Awaitable[Any]]
@@ -140,30 +140,42 @@ class CollationScheduler:
                     self._counts[tid] = 0
                     return
                 routes = self._ensure_routes()
-                await asyncio.gather(*(
-                    self._run(tid, name, fn, new, offset=last) for name, fn in routes
+                # short 会压缩改写 checkpoint（消息位置变化）。先并发跑只消费 new 的路由，
+                # 全部成功才允许 short 压缩并推进 cursor；任一失败则既不压缩也不推进，
+                # 下一轮从原 cursor 重放整段增量，避免失败路由的增量记忆被永久跳过。
+                consuming = [(n, f) for n, f in routes if n != "short"]
+                shorts = [(n, f) for n, f in routes if n == "short"]
+                oks = await asyncio.gather(*(
+                    self._run(tid, name, fn, new, offset=last) for name, fn in consuming
                 ))
-                # cursor 按 post_msgs 长度推进：下一轮 msgs[cursor:] 是按位置切片，必须把 SUMMARY 占位算进去。
-                post_msgs = await read_ckpt_msgs(tid)
-                await asyncio.to_thread(_save_cursor, tid, len(post_msgs))
+                ok_all = all(oks)
+                if ok_all:
+                    for name, fn in shorts:
+                        await self._run(tid, name, fn, new, offset=last)
+                    # cursor 按 post_msgs 长度推进：下一轮 msgs[cursor:] 是按位置切片，必须把 SUMMARY 占位算进去。
+                    post_msgs = await read_ckpt_msgs(tid)
+                    await asyncio.to_thread(_save_cursor, tid, len(post_msgs))
                 self._counts[tid] = 0
-                self._log(tid, route="collate", ok=True, new_messages=len(new))
+                self._log(tid, route="collate", ok=ok_all, new_messages=len(new))
             except Exception:
                 self._log(tid, route="collate", ok=False, error=traceback.format_exc())
 
-    async def _run(self, tid: str, name: str, fn: RouteFn, new: list, *, offset: int) -> None:
+    async def _run(self, tid: str, name: str, fn: RouteFn, new: list, *, offset: int) -> bool:
         for attempt in range(1, self._retries + 2):
             try:
                 await fn(tid, new, offset=offset, k=self._k)
+            except asyncio.CancelledError:
+                raise
             except BaseException:
                 final = attempt > self._retries
                 self._log(tid, route=name, ok=False, error=traceback.format_exc(),
                           attempt=attempt, retrying=not final)
                 if final:
-                    return
+                    return False
                 continue
             self._log(tid, route=name, ok=True, attempt=attempt)
-            return
+            return True
+        return False
 
     @staticmethod
     def _log(tid: str, *, route: str, ok: bool, error: Optional[str] = None, **extra: Any) -> None:

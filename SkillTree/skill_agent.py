@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from toolagent_prompt import SKILL_IMPROVE_PROMPT, SKILL_TREE_PROMPT  # noqa: E402
+from Memory.proj_agent import _note_path  # noqa: E402  # projectKnow 实际落在 SessionDB/<tid>/，与写入方共用同一路径函数
+from toolagent_prompt import SKILL_CURATOR_PROMPT  # noqa: E402
 
 load_dotenv()
 llm = ChatOpenAI(
@@ -28,11 +29,10 @@ llm = ChatOpenAI(
 )
 
 
-# skill tree (from project notes) ============================================
+# skill tree curation ========================================================
 
 
 TREE_DIR = Path(__file__).resolve().parent
-PROJECT_NOTES = ROOT / "Memory" / "projectKnow.md"
 _SLUG_RE = re.compile(r'[^a-zA-Z0-9_\-]+')
 
 
@@ -86,10 +86,10 @@ class SkillTreeBatch(BaseModel):
     )
 
 
-_tree_chain = (
+_curator_chain = (
     ChatPromptTemplate.from_messages([
-        ("system", SKILL_TREE_PROMPT),
-        ("human", "notes:\n{notes}\n\nexisting_tree:\n{existing_tree}"),
+        ("system", SKILL_CURATOR_PROMPT),
+        ("human", "transcript:\n{transcript}\n\nnotes:\n{notes}\n\nexisting_tree:\n{existing_tree}"),
     ])
     | llm.with_structured_output(SkillTreeBatch)
 )
@@ -120,51 +120,18 @@ def _apply_tree_edit(e: SkillTreeEdit, existing: dict[str, str]) -> dict:
 
 
 @tool
-async def collate_skill_tree() -> dict:
+async def curate_skill_tree(messages: list[BaseMessage], thread_id: str = "") -> dict:
     """
-    从 Memory/projectKnow.md 抽取可复用技能并写入 SkillTree/<category>/<name>.md。
-    已存在则按 LLM 决策 update / 保持不变；新技能自动建分类目录。
+    一次 LLM 调用维护 SkillTree（原 skills / skill_tree 两路合并）：
+    用本批次运行 transcript 的教训 + SessionDB/<thread_id>/projectKnow.md 的流程记忆，
+    以 update 改进已有技能为主，确有新的端到端可复用流程才 insert。
     """
-    if not PROJECT_NOTES.exists():
-        return {"error": "projectKnow.md not found", "edits": []}
-    notes = PROJECT_NOTES.read_text(encoding="utf-8").strip()
-    if not notes:
-        return {"edits": [], "applied": []}
+    notes_path = _note_path(thread_id)
+    notes = notes_path.read_text(encoding="utf-8").strip() if notes_path.exists() else ""
     existing = _scan_tree()
-    batch: SkillTreeBatch = await _tree_chain.ainvoke({
-        "notes": notes,
-        "existing_tree": json.dumps(existing, ensure_ascii=False),
-    })
-    applied = [_apply_tree_edit(e, existing) for e in batch.edits]
-    return {"edits": [e.model_dump() for e in batch.edits], "applied": applied}
-
-
-async def route_skill_tree(tid: str, new: list[BaseMessage], *, offset: int = 0, k: int = 5) -> None:
-    """调度入口：从 projectKnow.md 提炼技能树。与消息内容无关，仅在调度节拍触发。"""
-    await collate_skill_tree.ainvoke({})
-
-
-# skill improve (from run transcript) ========================================
-
-
-_improve_chain = (
-    ChatPromptTemplate.from_messages([
-        ("system", SKILL_IMPROVE_PROMPT),
-        ("human", "transcript:\n{transcript}\n\nexisting_tree:\n{existing_tree}"),
-    ])
-    | llm.with_structured_output(SkillTreeBatch)
-)
-
-
-@tool
-async def improve_skill_tree(messages: list[BaseMessage]) -> dict:
-    """
-    从最近一次运行的 transcript 提炼教训，改进 SkillTree 中已有技能
-    （update 为主，确有新技能才 insert）。
-    """
-    existing = _scan_tree()
-    batch: SkillTreeBatch = await _improve_chain.ainvoke({
+    batch: SkillTreeBatch = await _curator_chain.ainvoke({
         "transcript": get_buffer_string(messages),
+        "notes": notes or "(empty)",
         "existing_tree": json.dumps(existing, ensure_ascii=False),
     })
     applied = [_apply_tree_edit(e, existing) for e in batch.edits]
@@ -172,6 +139,6 @@ async def improve_skill_tree(messages: list[BaseMessage]) -> dict:
 
 
 async def route_skills(tid: str, new: list[BaseMessage], *, offset: int = 0, k: int = 5) -> None:
-    """调度入口：用本批次 transcript 改进 SkillTree 中的技能。"""
-    await improve_skill_tree.ainvoke({"messages": new})
+    """调度入口：transcript 教训 + projectKnow 流程 → 一次调用维护 SkillTree。"""
+    await curate_skill_tree.ainvoke({"messages": new, "thread_id": tid})
 
