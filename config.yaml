@@ -122,6 +122,10 @@ manager_recursion_limit: 2000     # 限制单次运行循环步数；须 > run_l
 manager_max_tokens: 2048         # 限制单次输出长度，减少大段生成导致的等待
 
 
+# >> Build Agent CLI Configuration
+build_agent_max_retries: 5       # build_agent.py：manager 提前停止（未输出 BUILD_RESULT）时自动续跑的最大次数
+
+
 # >> Collation Scheduler Configuration
 collation_turn_threshold: 20        # notify 累计满 N 轮即触发一次整理（不再 *2）：short_mem 自读 checkpoint，对所有未摘要消息压缩较旧一半（新一半留待下轮自然变"较旧"再压）；long_mem / skill 用 cursor=len(post_msgs) 做增量去重，按整段新增处理
 collation_max_parallel: 2           # 同时在跑的 collation 任务上限（跨 thread 共享信号量）

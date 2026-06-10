@@ -5,7 +5,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
-from openai import APITimeoutError, LengthFinishReasonError
+from openai import LengthFinishReasonError, OpenAIError
 from pathlib import Path
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -25,7 +25,7 @@ from Tools.edit import Edit
 from Tools.read import Read
 from Tools.overview import Glob, Grep, RepoMap
 from Tools.linter import LintOutcome, alint_paths, lint_paths
-from Tools.utils import current_thread_id, llm_runtime_kwargs, subagent_checkpointer, workspace_dir, workspace_info
+from Tools.utils import asalvage_structured, current_thread_id, llm_runtime_kwargs, salvage_structured, subagent_checkpointer, workspace_dir, workspace_info
 from agents_prompt import coder_prompt
 
 # 事件流回调（供 Tasker_coder 等下游 agent 复用） 
@@ -406,25 +406,11 @@ def _salvage_messages(messages: list) -> list | None:
 
 
 def _salvage_report(messages: list) -> CoderReport | None:
-    payload = _salvage_messages(messages)
-    if payload is None:
-        return None
-    try:  # 这次结构化调用直接打 llm，不经过带预算中间件的 agent，所以不受调用上限约束
-        report = llm.with_structured_output(CoderReport).invoke(payload)
-    except Exception:
-        return None
-    return report if isinstance(report, CoderReport) else None
+    return salvage_structured(_salvage_messages(messages), llm, CoderReport)
 
 
 async def _asalvage_report(messages: list) -> CoderReport | None:
-    payload = _salvage_messages(messages)
-    if payload is None:
-        return None
-    try:  # 同 _salvage_report，但走异步且不阻塞事件循环
-        report = await llm.with_structured_output(CoderReport).ainvoke(payload)
-    except Exception:
-        return None
-    return report if isinstance(report, CoderReport) else None
+    return await asalvage_structured(_salvage_messages(messages), llm, CoderReport)
 
 
 def invoke_with_lint_gate(agent: Any, user_content: str, *, max_retries: int | None = None,) -> CoderReport:
@@ -477,10 +463,11 @@ async def astream_collect_final_state(agent: Any, messages: list, on_event: OnEv
                     seen.append(out)
             if on_event is not None:
                 await on_event(event)
-    except (LengthFinishReasonError, httpx.TimeoutException, APITimeoutError):
-        # 结构化输出撞 max_tokens 被截断 / 流式读超时：root on_chain_end 没跑到，final_state 多为空。
+    except (OpenAIError, httpx.HTTPError):
+        # 子代理执行层统一收口：结构化输出撞 max_tokens 被截断 / 流式读超时 / 连接失败 / 限流(429) / 5xx
+        # （含 SDK max_retries 耗尽后抛出的）——root on_chain_end 没跑到，final_state 多为空。
         # 返回流式途中累积的 seen 轨迹（含已改文件、已跑命令），让上层走 salvage / _missing_structured_response_report
-        # 做本地恢复，把已跑进展捞回来，而不是把超时冒泡成 Tasker_coder 的空 stub。
+        # 做本地恢复，把已跑进展捞回来，而不是把异常冒泡成上层的崩溃 / 空 stub。
         if final_state.get("messages"):
             return final_state
         return {"messages": seen}
@@ -561,18 +548,33 @@ _DISPATCH_CODER_DESC = (
 )
 
 
+def _exception_report(task_name: str, exc: Exception) -> CoderReport:
+    return CoderReport(
+        status="BLOCKED",
+        task_name=task_name.strip() or "(unknown)",
+        summary=f"coder 派发执行抛出异常：{exc!r}",
+        open_issues=[f"exception: {exc!r}；多为网络 / API 错误（连接失败 / 限流 / 5xx）或重试耗尽，可稍后重派。"],
+    )
+
+
 def _dispatch_coder_sync(task_name: str, task_prompt: str, context: str = "") -> str:
-    task_block = _format_task_specific_prompt(task_name, task_prompt, context)
-    child_agent = build_coder_agent(task_specific_prompt=task_block)  # 默认 coder_run_call_limit（完整单跑预算）
-    report = invoke_with_lint_gate(child_agent, _format_child_initial(task_name))
+    try:
+        task_block = _format_task_specific_prompt(task_name, task_prompt, context)
+        child_agent = build_coder_agent(task_specific_prompt=task_block)  # 默认 coder_run_call_limit（完整单跑预算）
+        report = invoke_with_lint_gate(child_agent, _format_child_initial(task_name))
+    except Exception as e:  # 顶层兜底：任何未被内部捕获的异常都收成 BLOCKED CoderReport，不冒泡给上层 manager
+        report = _exception_report(task_name, e)
     return _coder_report_to_json(report)
 
 
 async def _dispatch_coder_inner(task_name: str, task_prompt: str, context: str = "") -> str:
-    task_block = _format_task_specific_prompt(task_name, task_prompt, context)
-    child_agent = await asyncio.to_thread(build_coder_agent, task_specific_prompt=task_block)
-    on_event = on_event_var.get()
-    report = await ainvoke_with_lint_gate(child_agent, _format_child_initial(task_name), on_event=on_event)
+    try:
+        task_block = _format_task_specific_prompt(task_name, task_prompt, context)
+        child_agent = await asyncio.to_thread(build_coder_agent, task_specific_prompt=task_block)
+        on_event = on_event_var.get()
+        report = await ainvoke_with_lint_gate(child_agent, _format_child_initial(task_name), on_event=on_event)
+    except Exception as e:  # 顶层兜底：同 _dispatch_coder_sync
+        report = _exception_report(task_name, e)
     return _coder_report_to_json(report)
 
 

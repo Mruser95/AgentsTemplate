@@ -2,7 +2,7 @@ from typing import Any, Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
@@ -21,7 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
-from Tools.utils import current_thread_id, ensure_workspace, llm_runtime_kwargs, subagent_checkpointer  # noqa: E402
+from Tools.utils import asalvage_structured, current_thread_id, ensure_workspace, llm_runtime_kwargs, replay_payload, salvage_structured, subagent_checkpointer  # noqa: E402
 from agents_prompt import tester_prompt, runner_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -209,9 +209,10 @@ class TestReport(BaseModel):
 # ===== 共用辅助 ========================================================================
 
 def _output_path() -> Path:
-    """workspace 下的 TestDatasets.json；无 thread 上下文时回退 Logs/。"""
+    """workspace/tests 下的 TestDatasets.json（测试产物与交付源码分离，交付时整体剥离 tests/）；
+    无 thread 上下文时回退 Logs/。"""
     tid = current_thread_id()
-    return (ensure_workspace(tid) / DATASET_FILENAME) if tid else (PROJECT_ROOT / "Logs" / DATASET_FILENAME)
+    return (ensure_workspace(tid) / "tests" / DATASET_FILENAME) if tid else (PROJECT_ROOT / "Logs" / DATASET_FILENAME)
 
 
 def _rel(p: Path) -> str:
@@ -302,33 +303,12 @@ def _structured(state: dict, schema: type[BaseModel]) -> Optional[BaseModel]:
     return out if isinstance(out, schema) else None
 
 
-def _salvage_input(messages: list, schema: type[BaseModel]) -> Optional[list]:
-    """用现有对话历史拼出补救调用输入；轨迹里没有任何实际产出（无 AI / Tool 消息）时返回 None。"""
-    if not any(isinstance(m, (AIMessage, ToolMessage)) for m in messages):
-        return None
-    return list(messages) + [HumanMessage(content=_SALVAGE_INSTRUCTION.format(name=schema.__name__))]
-
-
 def _salvage(messages: list, schema: type[BaseModel]) -> Optional[BaseModel]:
-    payload = _salvage_input(messages, schema)
-    if payload is None:
-        return None
-    try:  # 直接打 llm（不经带预算中间件的 agent，故不受调用上限约束）
-        out = llm.with_structured_output(schema).invoke(payload)
-    except Exception:
-        return None
-    return out if isinstance(out, schema) else None
+    return salvage_structured(replay_payload(messages, _SALVAGE_INSTRUCTION.format(name=schema.__name__)), llm, schema)
 
 
 async def _asalvage(messages: list, schema: type[BaseModel]) -> Optional[BaseModel]:
-    payload = _salvage_input(messages, schema)
-    if payload is None:
-        return None
-    try:  # 同 _salvage，走异步不阻塞事件循环
-        out = await llm.with_structured_output(schema).ainvoke(payload)
-    except Exception:
-        return None
-    return out if isinstance(out, schema) else None
+    return await asalvage_structured(replay_payload(messages, _SALVAGE_INSTRUCTION.format(name=schema.__name__)), llm, schema)
 
 
 def _failure_report(state: dict, schema: type[BaseModel], prefix: str) -> dict:

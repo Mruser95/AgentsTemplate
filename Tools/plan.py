@@ -6,6 +6,7 @@ from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel, Field
 import json
 import sys
+import threading
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -114,42 +115,55 @@ def _find_milestone(plan: dict, milestone_id: str) -> Optional[dict]:
 # Plan Tool ==========================================================================
 
 
+# 同一 thread 内并发 plan 写（同轮并行多个 plan tool call）的竞态防护：
+_LOCKS_GUARD = threading.Lock()
+_PLAN_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _plan_lock(thread_id: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _PLAN_LOCKS.setdefault(thread_id, threading.Lock())
+
+
 HARD_GATE_THRESHOLD = 50
 HARD_GATE_NOTE = "（偏离分过大，系统判定为不通过，请修复或补充证据）"
 
 
-def _apply_hard_gate(subtask_id: str, plan: dict, report: dict) -> bool:
-    """硬门禁（纯代码控制，不依赖 LLM）：drift_score > 50 时，把该 subtask 及其所属
-    milestone 一并回退为 in_progress，并把系统判定语写进 report。返回是否触发。"""
+def _apply_hard_gate(milestone_id: str, report: dict) -> bool:
+    """硬门禁（纯代码控制，不依赖 LLM）：drift_score > 50 时，把该 milestone 回退为
+    in_progress，并把系统判定语写进 report。返回是否触发。
+    **重新读盘后只改目标 milestone 的 status 字段**（不用调用时的内存快照整体覆盖），
+    避免同轮并行的其它 plan 写入被陈旧快照覆盖丢失。须在 per-thread 锁内调用。"""
     if int(report.get("drift_score", 0)) <= HARD_GATE_THRESHOLD:
         return False
-    m, st = _find_subtask(plan, subtask_id)
-    if st is not None:
-        st["status"] = "in_progress"
+    path = _plan_path(current_thread_id())
+    plan = _read_plan(path)
+    if plan is not None:
+        m = _find_milestone(plan, milestone_id)
         if m is not None:
             m["status"] = "in_progress"
-        _write_plan(_plan_path(current_thread_id()), plan)
+            _write_plan(path, plan)
     report["system_verdict"] = HARD_GATE_NOTE
     return True
 
 
-def _format_done_response(subtask_id: str, report: dict, gated: bool = False) -> str:
+def _format_done_response(milestone_id: str, report: dict, gated: bool = False) -> str:
     if gated:
         head = (
-            f"=== 硬门禁不通过：subtask `{subtask_id}` drift_score="
+            f"=== 硬门禁不通过：milestone `{milestone_id}` drift_score="
             f"{report.get('drift_score')} > {HARD_GATE_THRESHOLD} ===\n"
-            "已自动把该 subtask 及其所属 milestone 一并回退为 in_progress（本次 done 不予采纳）。\n\n"
+            "已自动把该 milestone 回退为 in_progress（本次 done 不予采纳）。\n\n"
         )
     else:
-        head = f"=== subtask `{subtask_id}` 已写入 plan.json，状态 = done ===\n\n"
+        head = f"=== milestone `{milestone_id}` 已写入 plan.json，状态 = done ===\n\n"
     return (
         head
         + "=== Checker 强制对齐报告（hard gate） ===\n"
         f"{json.dumps(report, ensure_ascii=False, indent=2)}\n\n"
         "=== 你下一步必须做的（铁律） ===\n"
-        "* on_track / minor_drift  → 直接开始下一个 subtask（按 plan 拓扑派发 / 执行）。\n"
-        "* major_drift / off_track → 立即按 suggestions 调整（回滚刚才的状态 / "
-        "重做 / 拆分 subtask），**禁止**继续推进；必要时把 plan.status 改回 "
+        "* on_track / minor_drift  → 进入下一个 milestone（按 plan 拓扑派发 / 执行）。\n"
+        "* major_drift / off_track → 立即按 suggestions 调整（回滚 / 重做该 milestone 内"
+        "相关 subtask / 拆分），**禁止**继续推进；必要时把 plan.status 改回 "
         "'drafting' 并向用户复盘。\n"
         "* 任何情况下都不得忽略本报告。"
     )
@@ -165,12 +179,13 @@ class Plan(BaseTool):
         "- read: 返回当前 plan dict 的 JSON 字符串；空 / 非法时返回提示语；\n"
         "- write: 用 plan_json 覆盖整个 plan.json（写完会自动盖 updated_at；首次 write "
         "会自动加 created_at）；\n"
-        "- update_subtask_status: 改某个 subtask 的 status（pending/in_progress/done/blocked）。"
-        "**当 new_status='done' 时，本工具会强制调 checker_agent 做对齐检查，"
-        "并把 CheckerReport 嵌入返回值；manager 必须读完 report 再决定下一步。"
-        "若 report.drift_score > 50，系统会硬门禁判定不通过：自动把该 subtask 及其所属 "
-        "milestone 一并回退为 in_progress 并在 report 附判定语，此 done 不予采纳**；\n"
-        "- set_milestone_status: 改 milestone 的 status；\n"
+        "- update_subtask_status: 改某个 subtask 的 status（pending/in_progress/done/blocked）；"
+        "**只记录状态、不触发检查**（checker 改在 milestone 完成时统一做）；\n"
+        "- set_milestone_status: 改 milestone 的 status。"
+        "**当 new_status='done' 时，本工具会强制调 checker_agent 对该 milestone 下所有 subtask "
+        "做整体对齐检查，并把 CheckerReport 嵌入返回值；manager 必须读完 report 再决定下一步。"
+        "若 report.drift_score > 50，系统会硬门禁判定不通过：自动把该 milestone 回退为 "
+        "in_progress 并在 report 附判定语，此 done 不予采纳**；\n"
         "- set_plan_status: 改 plan.status（drafting/ready/executing/done/blocked）；\n"
         "- clear: 清空 plan.json。\n"
         "**只有 manager 能用此工具**。plan.json 是唯一可信事实源，只能经本工具读写"
@@ -183,44 +198,50 @@ class Plan(BaseTool):
         self, action: str, plan_json: Optional[str] = None, subtask_id: Optional[str] = None, milestone_id: Optional[str] = None,
         new_status: Optional[str] = None, result_summary: Optional[str] = None, state: Annotated[dict, InjectedState] = None,
     ) -> str:
-        prep = self._prepare(
-            action=action,
-            plan_json=plan_json,
-            subtask_id=subtask_id,
-            milestone_id=milestone_id,
-            new_status=new_status,
-            result_summary=result_summary,
-        )
+        tid = current_thread_id()
+        with _plan_lock(tid):
+            prep = self._prepare(
+                action=action,
+                plan_json=plan_json,
+                subtask_id=subtask_id,
+                milestone_id=milestone_id,
+                new_status=new_status,
+                result_summary=result_summary,
+            )
         if isinstance(prep, str):
             return prep
         kind, payload = prep
-        if kind == "subtask_done":
+        if kind == "milestone_done":
             messages = (state or {}).get("messages", [])
-            report = run_checker(messages, payload["plan"])
-            gated = _apply_hard_gate(payload["subtask_id"], payload["plan"], report)
-            return _format_done_response(payload["subtask_id"], report, gated)
+            report = run_checker(messages, payload["plan"], focus_hint=payload["milestone_id"])
+            with _plan_lock(tid):
+                gated = _apply_hard_gate(payload["milestone_id"], report)
+            return _format_done_response(payload["milestone_id"], report, gated)
         return payload
 
     async def _arun(
         self, action: str, plan_json: Optional[str] = None, subtask_id: Optional[str] = None, milestone_id: Optional[str] = None,
         new_status: Optional[str] = None, result_summary: Optional[str] = None, state: Annotated[dict, InjectedState] = None,
     ) -> str:
-        prep = self._prepare(
-            action=action,
-            plan_json=plan_json,
-            subtask_id=subtask_id,
-            milestone_id=milestone_id,
-            new_status=new_status,
-            result_summary=result_summary,
-        )
+        tid = current_thread_id()
+        with _plan_lock(tid):
+            prep = self._prepare(
+                action=action,
+                plan_json=plan_json,
+                subtask_id=subtask_id,
+                milestone_id=milestone_id,
+                new_status=new_status,
+                result_summary=result_summary,
+            )
         if isinstance(prep, str):
             return prep
         kind, payload = prep
-        if kind == "subtask_done":
+        if kind == "milestone_done":
             messages = (state or {}).get("messages", [])
-            report = await arun_checker(messages, payload["plan"])
-            gated = _apply_hard_gate(payload["subtask_id"], payload["plan"], report)
-            return _format_done_response(payload["subtask_id"], report, gated)
+            report = await arun_checker(messages, payload["plan"], focus_hint=payload["milestone_id"])
+            with _plan_lock(tid):
+                gated = _apply_hard_gate(payload["milestone_id"], report)
+            return _format_done_response(payload["milestone_id"], report, gated)
         return payload
 
 
@@ -267,9 +288,7 @@ class Plan(BaseTool):
             if result_summary is not None:
                 st["result_summary"] = result_summary
             _write_plan(path, plan)
-            if new_status == "done":
-                return ("subtask_done", {"subtask_id": subtask_id, "plan": plan})
-            return f"subtask {subtask_id} 状态已更新为 {new_status}。"
+            return f"subtask {subtask_id} 状态已更新为 {new_status}（checker 在 milestone 完成时统一检查）。"
 
         if action == "set_milestone_status":
             if not milestone_id or not new_status:
@@ -279,6 +298,8 @@ class Plan(BaseTool):
                 return f"未找到 milestone_id={milestone_id}。"
             m["status"] = new_status
             _write_plan(path, plan)
+            if new_status == "done":
+                return ("milestone_done", {"milestone_id": milestone_id, "plan": plan})
             return f"milestone {milestone_id} 状态已更新为 {new_status}。"
 
         if action == "set_plan_status":

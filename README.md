@@ -1,74 +1,58 @@
 # AgentsTemplate
 
-一个基于 **LangGraph + LangChain** 的多代理项目执行框架。`manager` 把自然语言需求拆成 `plan.json`，按拓扑顺序派发给专职子代理（`tasker_coder` → `coder` / `tester` / `retriver` / `checker`）执行；每个 subtask 完成时由 `checker` 做硬门评估，全过程通过 SQLite checkpoint 持久化；后台 **COLLATOR** 调度器按节拍把对话流转沉淀到长/短期记忆、项目笔记与 skill 经验树。
+基于 **LangGraph + LangChain** 的多代理项目执行框架。`manager` 把自然语言需求拆成 `plan.json`，按拓扑顺序派发给专职子代理（`tasker_coder` → `coder` / `tester` / `retriver` / `checker`）；每个 subtask 完成时由 `checker` 做硬门评估，全程经 SQLite checkpoint 持久化；后台 **COLLATOR** 按节拍把对话沉淀到长/短期记忆、项目笔记与 skill 经验树。
 
 ## 架构总览
 
 ```
-                       ┌──────────────────────────┐
-                       │  COLLATOR（后台调度器）  │
-                       │  longmem · shortmem      │
-                       │  projmem · checkpoint    │
-                       │  skill chain             │
-                       └─────────────┬────────────┘
-                                     │ notify(turn 阈值)
-                                     ▼
-┌──────────────┐  human_input  ┌───────────────┐         ┌────────────┐
-│  WebUI / API ├──────────────►│    MANAGER    │────────►│  CHECKER   │
-└──────────────┘               │ 规划/派发/验收│  hard   │  对齐评估  │
-                               └──┬────┬────┬──┘  gate   └──────┬─────┘
-                                  │    │    │                   │
-                          ┌───────┘    │    └────────┐          │
-                          ▼            ▼             ▼          │
-                     RETIRVER       TASKER         TESTER       │
-                     多源调研     (多模块编排)    (用例生成)    │
-                                      │              │          │
-                                      ▼              ▼          │
-                                    CODER       Test Runner     │
-                                   (单文件)    (执行/出报告)    │
-                                      │              │          │
-                                      └──────┬───────┘          │
-                                             ▼                  │
-                                       ┌─────────────┐          │
-                                       │   sandbox   │◄─────────┘
-                                       │ (workspace) │
-                                       └──────┬──────┘
-                                              ▼
-                                       answer ──► project
+   COLLATOR（后台调度器）: longmem · shortmem · projmem · checkpoint · skill chain
+                       │ notify(turn 阈值)
+                       ▼
+ WebUI/API ─human_input─► MANAGER ─hard gate─► CHECKER（对齐评估）
+                        规划/派发/验收
+            ┌────────────┼────────────┐
+            ▼            ▼            ▼
+        RETIRVER      TASKER        TESTER
+        多源调研    (多模块编排)   (用例生成)
+                        │            │
+                        ▼            ▼
+                      CODER      Test Runner
+                     (单文件)    (执行/报告)
+                        └──────┬─────┘
+                               ▼
+                   sandbox(workspace) ─► answer ─► project
 
-工具层：
-  web/browser · shell · edit · repo_map/grep/glob · read · rag · schedule
-  lint · mcp · skill library
+工具层：web/browser · shell · edit · repo_map/grep/glob · read · rag
+         schedule · lint · mcp · skill/component library
 ```
 
 ### 关键约定
 
 - **plan.json 是唯一可信事实源**：所有阶段决定都落 plan，不靠临时记忆。
-- **checker hard gate**：`plan` 在 subtask 标记 `done` 时自动调 `checker`，输出 `on_track / minor_drift / major_drift / off_track`，manager 必须按报告调整。
-- **TestDatasets.json 用例覆盖硬约束**：派过 tester 的任务，验收 subtask 必须 `dispatch_test_runner` 跑全量 cases 并按 `judgment_criteria` 判 pass/fail（详见 [agents_prompt.py](agents_prompt.py) 中 `MANAGER_TESTER_POLICY`）。
-- **每个会话隔离 workspace**：子代理的文件读写都锁在 `SessionDB/thread_<id>/workspace/`，并自带专属 `.venv`。
-- **工具规范常驻 description**：各工具的使用规范精华直接写在 tool description 里（零往返），无需先查文档再调用。
+- **checker hard gate**：subtask 标 `done` 时自动调 `checker`，输出 `on_track / minor_drift / major_drift / off_track`，manager 必须按报告调整。
+- **TestDatasets.json 硬约束**：派过 tester 的任务，验收 subtask 必须 `dispatch_test_runner` 跑全量 cases 并按 `judgment_criteria` 判 pass/fail（详见 [agents_prompt.py](agents_prompt.py) 的 `MANAGER_TESTER_POLICY`）。
+- **会话级 workspace 隔离**：子代理文件读写锁在 `SessionDB/thread_<id>/workspace/`，自带专属 `.venv`。
+- **工具规范常驻 description**：各工具使用规范精华直接写在 tool description 里（零往返），无需先查文档再调用；`skill_tree` 则保留**按需查询** COLLATOR 沉淀技能。
 
 ## 角色与职责
 
 | 代理 | 文件 | 角色 |
 |---|---|---|
-| **MANAGER** | [Agents/manager.py](Agents/manager.py) | 项目经理：澄清需求 → 写 `plan.json` → 派发 → 收口；唯一被持久化（SQLite checkpoint）的代理。 |
-| **TASKER (tasker_coder)** | [Agents/Tasker_coder.py](Agents/Tasker_coder.py) | 多模块编码调度：把综合编码任务拆成独立 step，再用 `dispatch_coder` 逐条派给隔离的 coder 子代理；维护 `workingTodo.md`。 |
-| **CODER** | [Agents/coder.py](Agents/coder.py) | 单文件 / 单模块实际编码者；强制走 lint gate，结构化输出 `CoderReport`。 |
-| **TESTER** | [Agents/tester.py](Agents/tester.py) | `dispatch_tester` 产 `TestDatasets.json`；`dispatch_test_runner` 跑全量用例输出 `TestReport`。 |
-| **RETIRVER** | [Agents/retriver.py](Agents/retriver.py) | 唯一深度搜索 agent，跨源融合：长/短期记忆、项目知识库、Tavily 公网、Playwright 浏览器。 |
-| **CHECKER** | [Agents/checker.py](Agents/checker.py) | subtask done 时强制触发的对齐评估；输出 `CheckerReport` 决定是否允许继续。 |
-| **COLLATOR** | [schedule.py](schedule.py) + [Memory/](Memory/) + [SkillTree/](SkillTree/) | 后台调度器：按 `collation_turn_threshold` 触发 short / long / project / skills / skill_tree 五条 route。 |
-
+| **MANAGER** | [Agents/manager.py](Agents/manager.py) | 项目经理：澄清需求 → 写 `plan.json` → 派发 → 收口；唯一被 SQLite checkpoint 持久化的代理。 |
+| **TASKER (tasker_coder)** | [Agents/Tasker_coder.py](Agents/Tasker_coder.py) | 多模块编码调度：拆 step → `dispatch_coder` 逐条派给隔离 coder；维护 `workingTodo.md`。 |
+| **CODER** | [Agents/coder.py](Agents/coder.py) | 单文件/单模块编码者；强制过 lint gate，结构化输出 `CoderReport`。 |
+| **TESTER** | [Agents/tester.py](Agents/tester.py) | `dispatch_tester` 产 `TestDatasets.json`；`dispatch_test_runner` 跑全量用例出 `TestReport`。 |
+| **RETIRVER** | [Agents/retriver.py](Agents/retriver.py) | 唯一深度搜索 agent，跨源融合：长/短期记忆、知识库、Tavily、Playwright。 |
+| **CHECKER** | [Agents/checker.py](Agents/checker.py) | subtask done 时强制触发的对齐评估；`CheckerReport` 决定是否放行。 |
+| **COLLATOR** | [schedule.py](schedule.py) + [Memory/](Memory/) + [SkillTree/](SkillTree/) | 后台调度器：按 `collation_turn_threshold` 触发 short / long / project / skills / skill_tree 五路。 |
 
 ## 工具一览
 
-manager 与各子代理共享一套受预算约束的工具集（配额详见 [config.yaml](config.yaml)）：
+manager 与各子代理共享一套受预算约束的工具集（配额见 [config.yaml](config.yaml)）：
 
 | 类别 | 工具 | 说明 |
 |---|---|---|
-| **代码读取** | `repo_map` / `grep` / `glob` / `read_file` | AST 签名 + PageRank 摘要 / 文本搜索 / 通配符列文件 / 按行读文件（offset 翻页） |
+| **代码读取** | `repo_map` / `grep` / `glob` / `read_file` | AST 签名+PageRank 摘要 / 文本搜索 / 通配列文件 / 按行读（offset 翻页） |
 | **代码写入** | `edit` | `create / overwrite / str_replace / insert`，受 workspace 边界保护 |
 | **执行** | `terminal` (SafeShell) | 锁定 cwd 在 workspace、超时 / 权限白名单，自动激活会话 venv |
 | **网络** | `tavily_search` | 单点公网查证 |
@@ -82,24 +66,15 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 
 ## RAG / 知识库管道
 
-`Knowledge/` 提供一套**法条级**清洗 + 入库 + 检索的样例（默认面向 `.docx` 法律文本，可按需替换 `read_documents`）：
+`Knowledge/` 提供一套**法条级**清洗→入库→检索样例（默认面向 `.docx` 法律文本，可替换 `read_documents`）：
 
-1. **清洗与切分** ([cleanout.py](Knowledge/cleanout.py))
-   - 去目录、按 `第 N 编/章/节` 维护层级 ctx；按 `第 N 条` 切成主节点；
-   - 主节点 > 512 字符时再用 `HierarchicalNodeParser`（L0 1024 / L1 256）做子节点切分。
-2. **入库** ([createIndex.py](Knowledge/createIndex.py))
-   - 后端：`MilvusVectorStore`（HNSW，dim 默认 4096）+ 内建 `BM25BuiltInFunction` (jieba 分词) 双路；
-   - 持久化双 docstore（叶子节点 + 全量节点）以支持 AutoMerging；
-   - 通过 `IngestionPipeline + DocstoreStrategy.UPSERTS` 做增量更新。
-3. **检索** ([retriever.py](Knowledge/retriever.py))
-   - `QueryFusionRetriever` 把原 query 改写成 4 路并行做 RRF 融合；
-   - `AutoMergingRetriever` 把碎片叶子节点合并回大块上下文；
-   - `RerankAPI`（httpx 调用 `rerank_base_url` + `rerank_model`）做最后 top-N 重排。
-
+- **清洗切分** ([cleanout.py](Knowledge/cleanout.py))：按 `第 N 编/章/节` 维护层级、`第 N 条` 切主节点；主节点 >512 字符再用 `HierarchicalNodeParser`（L0 1024 / L1 256）切子节点。
+- **入库** ([createIndex.py](Knowledge/createIndex.py))：`MilvusVectorStore`（HNSW）+ 内建 `BM25BuiltInFunction`(jieba) 双路；双 docstore 支持 AutoMerging；`IngestionPipeline + UPSERTS` 增量更新。
+- **检索** ([retriever.py](Knowledge/retriever.py))：`QueryFusionRetriever` 改写 4 路 RRF 融合 → `AutoMergingRetriever` 合回大块 → `RerankAPI` top-N 重排。
 
 ## 后台 COLLATOR
 
-`CollationScheduler` 在 manager 每次工具调用结束后 `notify(thread_id, delta)` 累计活动消息数；累计满 `collation_turn_threshold`（默认 20）即并发触发 5 路整理：
+`CollationScheduler` 在 manager 每次工具调用后 `notify(thread_id, delta)` 累计活动消息；满 `collation_turn_threshold`（默认 20）即并发触发 5 路整理：
 
 | route | 行为 |
 |---|---|
@@ -114,12 +89,18 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 ## 快速开始
 
 ```bash
+# 起服务（API:8973 / WebUI:8080 / Milvus / PG）
 docker compose -f Docker/docker-compose.yaml up -d --build
+
+# 非交互构建一个成品 agent（服务没起会自动拉起），产物落 BuiltAgents/<slug>/
+./build.sh "构建一个能查天气并总结成简报的 agent"
 ```
+
+`build.sh` 自动选执行方式：Docker 容器在跑→进容器执行；否则本地服务(Milvus)已起且有 `.venv`→本地直跑；都没起→拉起 Docker 再执行。`BuiltAgents/` 已挂载到宿主机，重建容器也不丢。
 
 ## 调用预算
 
-每个工具与代理都在 [config.yaml](config.yaml) 配 run（单次 invoke）级调用上限，每轮重新计数、不跨 thread 累计。预算见底时代理会主动收口、压缩、报告，不会无限循环。每条工具返回末尾都会附 `[Tool call X/N, remaining: R]` 提示剩余配额。
+每个工具/代理在 [config.yaml](config.yaml) 配 run（单次 invoke）级调用上限，每轮重新计数、不跨 thread。预算见底时代理主动收口、压缩、报告，不会死循环。工具返回末尾附 `[Tool call X/N, remaining: R]` 提示剩余配额。
 
 ## 添加你自己的工具
 

@@ -2,7 +2,7 @@ from typing import Literal, Optional
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, get_buffer_string
+from langchain_core.messages import HumanMessage, get_buffer_string
 from pathlib import Path
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
@@ -18,7 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from Tools.terminal import SafeShell  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
-from Tools.utils import llm_runtime_kwargs, subagent_checkpointer  # noqa: E402
+from Tools.utils import asalvage_structured, llm_runtime_kwargs, replay_payload, salvage_structured, subagent_checkpointer  # noqa: E402
 from agents_prompt import checker_prompt  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
@@ -135,18 +135,24 @@ def build_checker_agent(plan: dict):
     )
 
 
-def _build_user_content(messages: list) -> str:
+def _build_user_content(messages: list, focus_hint: str = "") -> str:
     transcript = get_buffer_string(messages or [])
+    focus = (
+        f"\n\n=== 本次为 milestone 完成核对 ===\n"
+        f"重点评估 milestone `{focus_hint}` 下**所有 subtask 是否真完成且对齐 plan**"
+        f"（含真产物落地核对）；其余 milestone 仅作上下文，不在本次判定范围。\n"
+        if focus_hint else ""
+    )
     return (
         "=== MESSAGES TRANSCRIPT ===\n"
-        f"{transcript}\n\n"
+        f"{transcript}{focus}\n\n"
         "请基于 system 中的 plan 与以上 transcript 评估偏离情况，以 CheckerReport 结构化 JSON 输出。"
     )
 
 
-def run_checker(messages: list, plan: dict) -> dict:
+def run_checker(messages: list, plan: dict, focus_hint: str = "") -> dict:
     state = build_checker_agent(plan).invoke(
-        {"messages": [HumanMessage(content=_build_user_content(messages))]}
+        {"messages": [HumanMessage(content=_build_user_content(messages, focus_hint))]}
     )
     report = state.get("structured_response")
     if not isinstance(report, CheckerReport):
@@ -156,9 +162,9 @@ def run_checker(messages: list, plan: dict) -> dict:
     return report.model_dump()
 
 
-async def arun_checker(messages: list, plan: dict) -> dict:
+async def arun_checker(messages: list, plan: dict, focus_hint: str = "") -> dict:
     state = await build_checker_agent(plan).ainvoke(
-        {"messages": [HumanMessage(content=_build_user_content(messages))]}
+        {"messages": [HumanMessage(content=_build_user_content(messages, focus_hint))]}
     )
     report = state.get("structured_response")
     if not isinstance(report, CheckerReport):
@@ -179,33 +185,12 @@ _SALVAGE_INSTRUCTION = (
 )
 
 
-def _salvage_input(messages: list) -> Optional[list]:
-    """用现有对话历史拼补救调用输入；轨迹里没有任何实际产出（无 AI / Tool 消息）时返回 None。"""
-    if not any(isinstance(m, (AIMessage, ToolMessage)) for m in messages):
-        return None
-    return list(messages) + [HumanMessage(content=_SALVAGE_INSTRUCTION)]
-
-
 def salvage_checker(messages: list) -> Optional[CheckerReport]:
-    payload = _salvage_input(messages)
-    if payload is None:
-        return None
-    try:
-        out = llm.with_structured_output(CheckerReport).invoke(payload)
-    except Exception:
-        return None
-    return out if isinstance(out, CheckerReport) else None
+    return salvage_structured(replay_payload(messages, _SALVAGE_INSTRUCTION), llm, CheckerReport)
 
 
 async def asalvage_checker(messages: list) -> Optional[CheckerReport]:
-    payload = _salvage_input(messages)
-    if payload is None:
-        return None
-    try:  # 同 salvage_checker，走异步不阻塞事件循环
-        out = await llm.with_structured_output(CheckerReport).ainvoke(payload)
-    except Exception:
-        return None
-    return out if isinstance(out, CheckerReport) else None
+    return await asalvage_structured(replay_payload(messages, _SALVAGE_INSTRUCTION), llm, CheckerReport)
 
 
 def checker_failed_report() -> dict:

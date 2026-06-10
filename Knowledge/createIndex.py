@@ -37,26 +37,26 @@ Settings.embed_model = OpenAILikeEmbedding(
 doc_dir = Path(__file__).resolve().parent / "doc_store"
 all_doc_dir = Path(__file__).resolve().parent / "all_doc_store"
 
-vector_store = MilvusVectorStore(
-    uri=os.getenv("MILVUS_URI", str(Path(__file__).resolve().parent / "milvus.db")),
-    token=os.getenv("MILVUS_TOKEN", ""),
-    collection_name="law_articles",
-    dim=4096,
-    overwrite=not ((doc_dir / "docstore.json").exists() and (all_doc_dir / "docstore.json").exists()),
-    output_fields=["text", "doc_id"],
-    index_config={
-        "index_type": "HNSW", 
-        "M": 16, "efConstruction": 256
-    }, 
-    search_config={"ef": 64},
-    enable_sparse=True,
-    sparse_embedding_function=BM25BuiltInFunction(
-        analyzer_params={"tokenizer": "jieba"}
-    ),
-)
-
 def get_index():
     has_docstore = (doc_dir / "docstore.json").exists() and (all_doc_dir / "docstore.json").exists()
+    vector_store = MilvusVectorStore(
+        uri=os.getenv("MILVUS_URI", str(Path(__file__).resolve().parent / "milvus.db")),
+        token=os.getenv("MILVUS_TOKEN", ""),
+        collection_name="law_articles",
+        dim=4096,
+        overwrite=not has_docstore,
+        output_fields=["text", "doc_id"],
+        index_config={
+            "index_type": "HNSW",
+            "M": 16, "efConstruction": 256
+        },
+        search_config={"ef": 64},
+        enable_sparse=True,
+        sparse_embedding_function=BM25BuiltInFunction(
+            analyzer_params={"tokenizer": "jieba"}
+        ),
+    )
+    
     if has_docstore:
         try:
             vector_store.client.load_collection("law_articles")

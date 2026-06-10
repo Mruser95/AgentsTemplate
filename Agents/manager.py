@@ -16,6 +16,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Tools.terminal import SafeShell  # noqa: E402
+from Tools.skills import SkillTreeLibrary  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.schedule import Schedule  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
@@ -27,6 +28,7 @@ from Tools.utils import (  # noqa: E402
     llm_runtime_kwargs,
     reset_tool_budgets,
 )
+from CompLib.library import ComponentLibrary  # noqa: E402
 from Agents.retriver import retrieve  # noqa: E402
 from Agents.coder import dispatch_coder  # noqa: E402
 from Agents.Tasker_coder import dispatch_tasker_coder  # noqa: E402
@@ -70,6 +72,8 @@ _MANAGER_TOOLS = [
     TavilySearch(),
     Schedule(),
     Plan(),
+    ComponentLibrary(),
+    SkillTreeLibrary(),
     retrieve,
     dispatch_coder,
     dispatch_tasker_coder,

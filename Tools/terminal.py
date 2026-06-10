@@ -1,5 +1,6 @@
 import re
 import sys
+import shlex
 import subprocess
 import locale
 import asyncio
@@ -112,6 +113,93 @@ def _truncate(output: str) -> str:
     return f"{head}\n...[{omitted} chars truncated, exceeded {shell_output_max_length} limit]...\n{tail}"
 
 
+# ─── requirements.txt 自动登记 ──────────────────────────────────────────────
+_PIP_INSTALL_RX = re.compile(
+    r'(?:^|\s)(?:pip[0-9.]*\s+install|python[0-9.]*\s+-m\s+pip\s+install|uv\s+pip\s+install)(?:\s|$)'
+)
+# 带独立取值的 flag：其后一个 token 是值不是包名，需一并跳过
+_PIP_VALUE_FLAGS = {
+    "-r", "--requirement", "-c", "--constraint", "-i", "--index-url", "--extra-index-url",
+    "-t", "--target", "-f", "--find-links", "--no-binary", "--only-binary", "--root",
+    "--prefix", "--progress-bar", "--python-version", "--platform", "--abi", "--implementation",
+}
+# 不该写进清单的 token：工具链自身 / 本地目录安装
+_PIP_SKIP_TOKENS = {"pip", "setuptools", "wheel", ".", ".."}
+# shell 控制 / 重定向操作符：pip 包参数应在此截断（其后是管道 / 重定向 / 其它命令，不是包）
+_SHELL_OP_TOKENS = {"|", "||", "&", "&&", ";", ">", ">>", "<", "<<", "<<<", "|&", "&>", ">&"}
+_REDIR_RX = re.compile(r'^\d*[<>]+&?\d*$')  # 2>&1 / 2> / 1> / >&2 等
+
+
+def _is_shell_op(tok: str) -> bool:
+    """token 是否为 shell 控制 / 重定向操作符。版本规格如 `foo>=1.0` 以字母开头，不在此列。"""
+    return tok in _SHELL_OP_TOKENS or bool(_REDIR_RX.match(tok)) or tok[:1] in "<>"
+
+
+def _pip_packages(subcmd: str) -> list[str]:
+    """从单条 `pip install ...` 子命令里抽出用户请求的包规格（保留版本/extras）。
+    遇到 shell 操作符（`|` `>` `2>&1` 等）即停止——其后不是包名，避免把命令碎片写进 requirements。"""
+    try:
+        tokens = shlex.split(subcmd)
+    except ValueError:
+        return []
+    if "install" not in tokens:
+        return []
+    pkgs: list[str] = []
+    skip_next = False
+    for tok in tokens[tokens.index("install") + 1:]:
+        if _is_shell_op(tok):
+            break
+        if skip_next:
+            skip_next = False
+            continue
+        if tok in _PIP_VALUE_FLAGS:
+            skip_next = True
+            continue
+        if tok.startswith("-") or tok in _PIP_SKIP_TOKENS:
+            continue
+        pkgs.append(tok)
+    return pkgs
+
+
+def _req_name(spec: str) -> str:
+    """规格里的分发名部分（去版本/extras/marker），归一化用于去重。"""
+    m = re.match(r'[A-Za-z0-9._-]+', spec.strip())
+    return m.group(0).lower().replace("_", "-") if m else spec.strip().lower()
+
+
+def _record_requirements(command: str, output: str, cwd: str | None) -> None:
+    """pip install 成功后，把新装的包并入 cwd/requirements.txt（去重、保序、保留已有行）。"""
+    if not cwd or not isinstance(output, str):
+        return
+    if output.startswith(("[exit=", "Command timed out", "Command failed")):
+        return  # 仅登记成功的安装
+    specs: list[str] = []
+    for sub in re.split(r'&&|\|\||;|\n', command):
+        if _PIP_INSTALL_RX.search(sub):
+            specs.extend(_pip_packages(sub))
+    if not specs:
+        return
+    # 文件 I/O 全程兜底：登记失败绝不能影响命令执行/返回
+    try:
+        req_path = Path(cwd) / "requirements.txt"
+        lines = req_path.read_text(encoding="utf-8", errors="ignore").splitlines() if req_path.is_file() else []
+        seen = {_req_name(s) for s in lines if s.strip() and not s.strip().startswith("#")}
+        added = False
+        for spec in specs:
+            name = _req_name(spec)
+            if name and name not in seen:
+                seen.add(name)
+                lines.append(spec)
+                added = True
+        if not added:
+            return
+        while lines and not lines[-1].strip():
+            lines.pop()
+        req_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _execute(command: str, timeout: int | None = None,cwd: str | None = None,env: dict | None = None) -> str:
     allowed, denied = check_command(command)
     if not allowed:
@@ -122,6 +210,7 @@ def _execute(command: str, timeout: int | None = None,cwd: str | None = None,env
         if not response.allowed:
             return f"Command denied by checker agent: {response.reason}"
     output = _run_subprocess(command, timeout, cwd=cwd, env=env)
+    _record_requirements(command, output, cwd)
     return _truncate(output)
 
 
@@ -134,6 +223,7 @@ async def _execute_async(command: str, timeout: int | None = None, cwd: str | No
         if not response.allowed:
             return f"Command denied by checker agent: {response.reason}"
     output = await asyncio.to_thread(_run_subprocess, command, timeout, cwd, env)
+    _record_requirements(command, output, cwd)
     return _truncate(output)
 
 

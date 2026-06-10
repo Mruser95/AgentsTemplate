@@ -180,17 +180,26 @@ def _tool_call_groups(msgs: list) -> dict[str, set[str]]:
 
 
 async def compress_ckpt_messages(thread_id: str, removed_ids: list[str], summary_text: str) -> None:
-    """删除指定消息并追加摘要 SystemMessage；同组（AIMessage + 子 ToolMessage）整体进出。"""
+    """删除指定消息，并把摘要 SystemMessage 放回**时间线原位**（紧跟既有摘要、排在第一条存活
+    真实消息之前），而不是追加到末尾——否则旧半段的摘要会排到较新消息之后、顺序颠倒。
+    同组（AIMessage + 子 ToolMessage）整体进出，避免悬空 tool_call。"""
     ids = {i for i in (removed_ids or []) if i}
     if not ids or not summary_text:
         return
     from langchain_core.messages import RemoveMessage, SystemMessage
+    from langgraph.graph.message import REMOVE_ALL_MESSAGES
     from Agents.manager import open_manager_agent  # 局部导入避免循环
 
-    flat = _tool_call_groups(await read_ckpt_msgs(thread_id))
+    msgs = await read_ckpt_msgs(thread_id)
+    flat = _tool_call_groups(msgs)
     safe_ids = ids | {x for mid in ids for x in flat.get(mid, ())}
-    ops = [RemoveMessage(id=i) for i in safe_ids]
-    ops.append(SystemMessage(content=f"{SUMMARY_MARKER}\n{summary_text}"))
+    survivors = [m for m in msgs if getattr(m, "id", None) not in safe_ids]
+    summary = SystemMessage(content=f"{SUMMARY_MARKER}\n{summary_text}")
+    # 新摘要插到「最后一条既有摘要之后、第一条真实消息之前」，保证多次压缩时摘要按时间正序排列。
+    insert_at = next((i for i, m in enumerate(survivors) if not is_summary_message(m)), len(survivors))
+    new_msgs = survivors[:insert_at] + [summary] + survivors[insert_at:]
+    # add_messages 只能把新消息追加到末尾、无法 prepend：先 REMOVE_ALL 清空整表，再按新顺序整体重建。
+    ops = [RemoveMessage(id=REMOVE_ALL_MESSAGES), *new_msgs]
     async with open_manager_agent(thread_id=thread_id) as agent:
         await agent.aupdate_state({"configurable": {"thread_id": thread_id}}, {"messages": ops})
 
@@ -262,5 +271,50 @@ class ContextInjectMiddleware(AgentMiddleware):
         return request.override(
             messages=list(request.messages) + [SystemMessage(content="\n\n---\n\n".join(parts))]
         )
+
+
+# 结构化输出补救（salvage）通用核心 ===================================
+# 子代理因调用预算耗尽 / 流式分片拼坏 / 被截断而没产出 structured_response 时，绕开带预算中间件
+
+from typing import Optional, TypeVar  # noqa: E402
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
+
+_SalvageT = TypeVar("_SalvageT", bound=BaseModel)
+
+
+def has_trajectory(messages: list | None) -> bool:
+    """轨迹里是否有值得救回的真实产出（任意 AI / Tool 消息）。"""
+    return any(isinstance(m, (AIMessage, ToolMessage)) for m in messages or [])
+
+
+def replay_payload(messages: list | None, instruction: str) -> Optional[list]:
+    """默认 salvage payload：整段回放轨迹 + 末尾追加一条补救指令；无任何产出时返回 None。"""
+    if not has_trajectory(messages):
+        return None
+    return list(messages) + [HumanMessage(content=instruction)]
+
+
+def salvage_structured(payload: Optional[list], llm, schema: type[_SalvageT]) -> Optional[_SalvageT]:
+    """对已拼好的 payload（None 则跳过）打一次结构化输出调用；失败 / 类型不符返回 None。
+    直接打 llm，不经带预算中间件的 agent，故不受调用上限约束。"""
+    if payload is None:
+        return None
+    try:
+        out = llm.with_structured_output(schema).invoke(payload)
+    except Exception:
+        return None
+    return out if isinstance(out, schema) else None
+
+
+async def asalvage_structured(payload: Optional[list], llm, schema: type[_SalvageT]) -> Optional[_SalvageT]:
+    """salvage_structured 的异步孪生（ainvoke，不阻塞事件循环）。"""
+    if payload is None:
+        return None
+    try:
+        out = await llm.with_structured_output(schema).ainvoke(payload)
+    except Exception:
+        return None
+    return out if isinstance(out, schema) else None
 
 

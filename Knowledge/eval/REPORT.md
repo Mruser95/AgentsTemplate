@@ -30,10 +30,6 @@
 2. Rerank 默认 `top_n=10`，所以 K=20 反而不会比 K=10 多——简历里要写就用 K=1 / K=5。
 3. dense 在 K=20 还有 1 条 miss（`civil-1` 民法典施行日期 → 第一千二百六十条），rerank 在 K=10 还有 2 条 miss（再加 `arbitration-1` 一裁终局 → 仲裁法第九条），都属于「附则/原则性条款」，embedding 与 query 语义距离偏大，是真实弱项。
 
-## 评测中暴露的两个项目 bug（不影响评测，但建议修）
-1. **`Knowledge/createIndex.py` 的 BM25 路径在当前 Milvus 2.4.10 上跑不通**：`llama-index-vector-stores-milvus==1.1.0` + `pymilvus==2.6.14` 给 sparse 索引发 BM25 metric type，2.4.10 只支持 `IP`，启动即报 `only IP is the supported metric type for sparse index`。要么升级 Milvus 到 2.5+，要么把 sparse metric 锁成 `IP`。
-2. **`Knowledge/retriever.py` 模块顶部 `from Knowledge.createIndex import get_index`** 会触发 createIndex 模块级 `MilvusVectorStore(...)`，跟着上面那个 bug 一起炸；测试/复用时建议把 `get_index` 改为延迟导入，或者把 `vector_store` 的初始化放进 `get_index` 函数内部。
-
 ## QueryFusion+AutoMerging 这一段没拿到数
 跑 full 配置（dense + 4 路 query rewrite RRF + AutoMerging + rerank）时 LLM 改写 API 连续 30 分钟卡在 SSL recv 不返回，被强制中断。不补这条数据不影响简历主轴：rerank 的 +8.5pp Hit@1 已经是最值钱的那个数。
 

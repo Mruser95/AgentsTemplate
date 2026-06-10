@@ -41,15 +41,19 @@ def _slug(s: str) -> str:
 
 
 def _scan_tree() -> dict[str, str]:
+    """{'<category>/<name>': '<frontmatter description / 使用场景>'}，供 curator 去重判断。"""
+    from Tools.skills import _parse_frontmatter
+
     out: dict[str, str] = {}
     if not TREE_DIR.exists():
         return out
     for md in TREE_DIR.glob("*/*.md"):
         key = f"{md.parent.name}/{md.stem}"
         try:
-            out[key] = md.read_text(encoding="utf-8")[:400]
+            meta, body = _parse_frontmatter(md.read_text(encoding="utf-8"))
         except Exception:
             continue
+        out[key] = str(meta.get("description") or "").strip() or body.strip()[:400]
     return out
 
 
@@ -61,7 +65,12 @@ class SkillTreeEdit(BaseModel):
     name: str = Field(description="Skill slug (file stem, no extension).")
     content: Optional[str] = Field(
         default=None,
-        description="Full markdown body. Required for insert/update; ignored for skip.",
+        description=(
+            "Full markdown for the file. Required for insert/update; ignored for skip. "
+            "MUST start with a YAML frontmatter block (`name` + `description`, where "
+            "`description` is a one-paragraph usage scenario telling when to consult "
+            "the skill), then the how-to body."
+        ),
     )
     target_key: Optional[str] = Field(
         default=None,
