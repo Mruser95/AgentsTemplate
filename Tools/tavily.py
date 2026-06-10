@@ -50,9 +50,9 @@ def _format_results(payload: dict) -> str:
 class TavilySearch(BaseTool):
     name: str = "tavily_search"
     description: str = (
-        "Web search via Tavily. Use to look up current docs, APIs, libraries, error "
-        "messages, or any external knowledge needed before coding. Input is a natural "
-        "language query."
+        "Web search via Tavily. 仅在本地代码 / 已有上下文回答不了时用（陌生库 API、版本差异、"
+        "报错专有名词）；本地 grep 能解决的不要搜。一次只查一件具体事，query 带版本 / 错误码更准；"
+        "返回的 Answer 已够用就收手，关键决策至少交叉两个来源。预算有限，不要当 grep 用。"
     )
     args_schema: Type[BaseModel] = TavilyInput
     max_tool_calls: int = Field(default=tavily_count_limit, description="Maximum number of allowed tool calls per thread")

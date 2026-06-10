@@ -214,7 +214,12 @@ class Schedule(BaseTool):
         "创建 / 列出 / 删除 / 回看定时任务。**只有 manager 能使用此工具**；"
         "到点后会自动启动一个新 Python 进程，把当时记录的 intent 与 JSON 上下文"
         "以 HumanMessage 形式交给 manager_agent 执行，用于恢复制定任务时的会话状态。"
-        "发起者（creator）必须是 'user' / 'agent' / 'unknown' 三者之一。"
+        "发起者（creator）必须是 'user' / 'agent' / 'unknown' 三者之一，不得伪造。"
+        "create/delete 会真实改系统调度器（Windows schtasks / Unix crontab），参数核对后再调："
+        "intent 写具体可执行的事（醒来的 manager 只看得到 intent+context）；"
+        "context 必须是合法 JSON 字符串（否则降级 {raw} 丢结构）；"
+        "name 仅字母数字连字符；time 为 Windows 'HH:MM' / Unix 5 段 cron。"
+        "到点失败不自愈——下次对话主动 history 回看执行日志。"
     )
     args_schema: Type[BaseModel] = ScheduleInput
 

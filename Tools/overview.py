@@ -188,7 +188,8 @@ class RepoMap(_Scoped):
     name: str = "repo_map"
     description: str = (
         "Aider 风格 Python 项目 overview：AST 抽类/函数签名 + import 图 PageRank，"
-        "**只展开 top_n 个核心文件**，其余只列路径。适合摸清结构 / 找入口；"
+        "**只展开 top_n 个核心文件**，其余只列路径。第一次进项目先调它摸结构（大仓库 "
+        "top_n 10~15 足够），定位到目标文件/行号后再 read_file 读小段；"
         "**不替代 read_file**——只有签名，没有实现。"
     )
     args_schema: Type[BaseModel] = RepoMapInput
@@ -258,7 +259,9 @@ class Grep(_Scoped):
     name: str = "grep"
     description: str = (
         "跨文件文本/正则搜索，返回 `path:line:content`，**带总条数 + 单文件条数双上限**，"
-        "超出截断。搜大目录前先用 glob 收窄（如 glob='*.py'）。"
+        "超出截断。搜大目录前先用 glob 收窄（如 glob='*.py'）；命中被截断时**收窄 "
+        "path/glob 或加严 pattern，不要调大 max_results 拼全量**。只返回命中行本身，"
+        "看上下文用 read_file 读那一段；找定义 pattern 用 'class Foo' / 'def foo'。"
     )
     args_schema: Type[BaseModel] = GrepInput
     max_tool_calls: int = Field(default=GREP_LIMIT)

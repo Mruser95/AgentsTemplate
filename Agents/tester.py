@@ -19,7 +19,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Tools.terminal import SafeShell  # noqa: E402
-from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.tavily import TavilySearch  # noqa: E402
 from Tools.utils import current_thread_id, ensure_workspace, llm_runtime_kwargs, subagent_checkpointer  # noqa: E402
@@ -276,7 +275,7 @@ def _build_agent(prompt: str, schema: type[BaseModel], task_prompt: str, prefix:
     run_limit = int(_CFG.get(f"{prefix}_run_call_limit", 30))
     return create_agent(
         model=bound_llm,
-        tools=[SkillLibrary(), SafeShell(), Read(), TavilySearch()],
+        tools=[SafeShell(), Read(), TavilySearch()],
         system_prompt=sp,
         response_format=schema,
         checkpointer=subagent_checkpointer(_CFG),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）

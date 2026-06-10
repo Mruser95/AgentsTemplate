@@ -47,7 +47,7 @@
 - **checker hard gate**：`plan` 在 subtask 标记 `done` 时自动调 `checker`，输出 `on_track / minor_drift / major_drift / off_track`，manager 必须按报告调整。
 - **TestDatasets.json 用例覆盖硬约束**：派过 tester 的任务，验收 subtask 必须 `dispatch_test_runner` 跑全量 cases 并按 `judgment_criteria` 判 pass/fail（详见 [agents_prompt.py](agents_prompt.py) 中 `MANAGER_TESTER_POLICY`）。
 - **每个会话隔离 workspace**：子代理的文件读写都锁在 `SessionDB/thread_<id>/workspace/`，并自带专属 `.venv`。
-- **skill_library 强约束**：任何子代理首次调用某工具前必须先 `skill_library(tool_name="<name>")` 加载规范，避免参数误用。
+- **工具规范常驻 description**：各工具的使用规范精华直接写在 tool description 里（零往返），无需先查文档再调用。
 
 ## 角色与职责
 
@@ -79,7 +79,6 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 | **质量门** | `linter` | py_compile / node --check / gcc -fsyntax-only / javac 等多语言语法关 |
 | **调度** | `schedule` | 创建 / 列出 / 删除 / 回看定时任务（仅 manager） |
 | **MCP** | `mcp` | 通过 streamable-http 接入外部 MCP server（terminal / browser 扩展） |
-| **元能力** | `skill_library` | 加载工具规范文档（首次用前必查） |
 
 ## RAG / 知识库管道
 
@@ -107,7 +106,7 @@ manager 与各子代理共享一套受预算约束的工具集（配额详见 [c
 | `short` | 读 checkpoint，自动压缩**较旧一半**消息为 `ShortMemoryEntry`（含 issues / decisions / errors / resolutions），并把对应 message 标记为 `SUMMARY_MARKER` 占位。 |
 | `long` | 从增量 transcript 抽取 `LongMemoryEntry`，再调 `collate_long_memory` 做插入 / 更新 / 删除 / 跳过的决策化整理。 |
 | `project` | 把"目标-上一步-这一步-效果-达成"以一句话追加到 `SessionDB/<thread_id>/projectKnow.md`（按用户线程隔离，分开不同项目）；任务切换时整体重置。 |
-| `skills` | 扫描本批次用过的工具，更新 `Skills/<tool>_skill.md` 的 `## 探索经验` 列表（add / update / replace / remove）。 |
+| `skills` | 用本批次 transcript 提炼教训，改进 `SkillTree/<category>/<name>.md` 中已有技能（update 为主，确有新技能才 insert）。 |
 | `skill_tree` | 从 `projectKnow.md` 提炼可复用技能，落到 `SkillTree/<category>/<name>.md`。 |
 
 并发受 `collation_max_parallel` 控制，失败按 `collation_retry_count` 重试，日志写 `Logs/collation/<tid>.jsonl`。
@@ -122,19 +121,11 @@ docker compose -f Docker/docker-compose.yaml up -d --build
 
 每个工具与代理都在 [config.yaml](config.yaml) 配 run（单次 invoke）级调用上限，每轮重新计数、不跨 thread 累计。预算见底时代理会主动收口、压缩、报告，不会无限循环。每条工具返回末尾都会附 `[Tool call X/N, remaining: R]` 提示剩余配额。
 
-## 添加你自己的工具 / 技能
+## 添加你自己的工具
 
-1. 在 [Tools/](Tools/) 写一个 `BaseTool` 子类（参考 [Tools/edit.py](Tools/edit.py)）：要么自带 `bump_budget` 限流，要么在 `config.yaml` 里加上 `<tool>_count_limit`。
-2. 在 [Skills/](Skills/) 加一份 `<name>_skill.md`，frontmatter 写：
-   ```yaml
-   ---
-   tool: <tool_name>
-   description: 一句话描述（被 skill_library list 时展示）
-   ---
-   ```
-   正文里留好 `## 探索经验` 的 fenced code block，COLLATOR 会自动累积经验条目。
-3. 在对应代理的 `_*_TOOLS` 列表（manager 在 [Agents/manager.py](Agents/manager.py)，coder 在 [Agents/coder.py](Agents/coder.py) 的 `build_coder_agent`，依此类推）里挂上即可被调用。
-4. 如果工具需要在 [agents_prompt.py](agents_prompt.py) 中显式管控（例如硬约束、调用顺序），同步补一段说明。
+1. 在 [Tools/](Tools/) 写一个 `BaseTool` 子类（参考 [Tools/edit.py](Tools/edit.py)）：要么自带 `bump_budget` 限流，要么在 `config.yaml` 里加上 `<tool>_count_limit`；把使用规范精华（硬约束 / 反模式 / 预算纪律）直接写进 `description`。
+2. 在对应代理的 `_*_TOOLS` 列表（manager 在 [Agents/manager.py](Agents/manager.py)，coder 在 [Agents/coder.py](Agents/coder.py) 的 `build_coder_agent`，依此类推）里挂上即可被调用。
+3. 如果工具需要在 [agents_prompt.py](agents_prompt.py) 中显式管控（例如硬约束、调用顺序），同步补一段说明。
 
 ## 扩展 MCP 工具
 

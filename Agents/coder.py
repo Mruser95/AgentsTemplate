@@ -21,7 +21,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from Tools.terminal import SafeShell
 from Tools.tavily import TavilySearch
-from Tools.skills import SkillLibrary
 from Tools.edit import Edit
 from Tools.read import Read
 from Tools.overview import Glob, Grep, RepoMap
@@ -217,7 +216,7 @@ def build_coder_agent(task_specific_prompt: str = "", *, run_limit: int | None =
     )
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell(), Read(), Edit(), RepoMap(), Grep(), Glob(), TavilySearch()],
+        tools=[SafeShell(), Read(), Edit(), RepoMap(), Grep(), Glob(), TavilySearch()],
         system_prompt=system_prompt,
         response_format=CoderReport,
         checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）

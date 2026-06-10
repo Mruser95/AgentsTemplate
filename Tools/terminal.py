@@ -139,7 +139,13 @@ async def _execute_async(command: str, timeout: int | None = None, cwd: str | No
 
 class SafeShell(BaseTool):
     name: str = "terminal"
-    description: str = "Run shell commands in a sandboxed terminal (allow-list enforced)."
+    description: str = (
+        "在受限沙箱执行 shell 命令（白名单 + LLM 二次审查）。仅用于运行 / 测试 / 必要系统命令："
+        "**禁止用 shell 写改文件**（cat>EOF / echo> / sed -i → 一律用 edit）；"
+        "找符号 / 文件用 repo_map/grep/glob，不用 rg/find。单条命令优先，仅强依赖时才 && 串联；"
+        "被拒（Command denied）不要变形 / 编码绕过——换思路或如实上报。"
+        "返回末尾 [Tool call X/N] 是预算，remaining ≤ 2 时停止探索性调用。"
+    )
     args_schema: Type[BaseModel] = SafeShellInput
     max_tool_calls: int = Field(default=shell_count_limit, description="Maximum number of allowed tool calls per thread")
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)

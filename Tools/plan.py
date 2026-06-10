@@ -173,7 +173,9 @@ class Plan(BaseTool):
         "- set_milestone_status: 改 milestone 的 status；\n"
         "- set_plan_status: 改 plan.status（drafting/ready/executing/done/blocked）；\n"
         "- clear: 清空 plan.json。\n"
-        "**只有 manager 能用此工具**。"
+        "**只有 manager 能用此工具**。plan.json 是唯一可信事实源，只能经本工具读写"
+        "（不得用 terminal 直接 cat/改）；write 是**整文件覆盖**——先 read 现状，"
+        "在内存改完一次性写回，避免漏字段；updated_at/created_at 自动维护，不要手填。"
     )
     args_schema: Type[BaseModel] = PlanInput
 

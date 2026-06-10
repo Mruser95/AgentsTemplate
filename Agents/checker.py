@@ -16,7 +16,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Tools.terminal import SafeShell  # noqa: E402
-from Tools.skills import SkillLibrary  # noqa: E402
 from Tools.read import Read  # noqa: E402
 from Tools.overview import Glob, Grep, RepoMap  # noqa: E402
 from Tools.utils import llm_runtime_kwargs, subagent_checkpointer  # noqa: E402
@@ -123,7 +122,7 @@ def build_checker_agent(plan: dict):
     system_prompt = f"{checker_prompt}\n\n---\n\n{_plan_inject_text(plan)}"
     return create_agent(
         model=llm,
-        tools=[SkillLibrary(), SafeShell(), Read(), RepoMap(), Grep(), Glob()],
+        tools=[SafeShell(), Read(), RepoMap(), Grep(), Glob()],
         system_prompt=system_prompt,
         response_format=CheckerReport,
         checkpointer=subagent_checkpointer(_config),  # 默认 False=不落盘；config.subagent_persist_checkpoint=true 时继承 manager saver（仅调试）

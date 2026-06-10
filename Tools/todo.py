@@ -98,8 +98,11 @@ class Todo(BaseTool):
         "管理 SessionDB/<thread_id>/workingTodo.md（当前 subtask 的派单清单 / markdown checkbox）。"
         "actions: view（查看当前清单） / write_steps（用一份新清单覆盖文件） / "
         "mark_done（把第 N 步 checkbox 改为 [x]） / clear（清空文件）。"
-        "**写权限归 tasker_coder**：每接到一个 subtask，先 write_steps 把派单清单落盘，"
-        "每派完一个 dispatch_coder 就立刻 mark_done(对应索引)；任务结束前调 clear。"
+        "**写权限归 tasker_coder**：每接到一个 subtask，先 write_steps 把派单清单落盘；"
+        "write_steps 是**整文件覆盖**，steps 一次列全（通常 1-6 条，每条格式 "
+        "'<task_name>: 一句话目标'，与 dispatch_coder 的 task_name 严格对齐）。"
+        "dispatch_coder(step_index=N) 返回 DONE 时框架自动 mark_done，无需手动勾选；"
+        "产出 TaskerReport 前调 clear，禁止多个 subtask 混用同一清单。"
         "**manager 只能 view**——用来观察 tasker_coder 当前的派发进度。"
     )
     args_schema: Type[BaseModel] = TodoInput

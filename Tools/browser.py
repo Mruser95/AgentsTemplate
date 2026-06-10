@@ -291,7 +291,12 @@ class Browser(BaseTool):
     description: str = (
         "Control a headless browser via Playwright. "
         "Actions: navigate, click, type, get_text, screenshot, get_html, "
-        "scroll, select, wait, eval_js, press_key, get_links, close."
+        "scroll, select, wait, eval_js, press_key, get_links, close. "
+        "重资源：先用 tavily_search 定位 URL 与摘要，只有 JS 渲染 / 登录态 / 点击交互"
+        "等 Tavily 快照拿不到的场景才开 browser；白名单外域名 navigate 会被拒，不得绕过。"
+        "操作顺序：navigate → get_links 拿真实 selector → click/type 精准操作，"
+        "**不要盲猜 CSS selector**；get_text/get_html 截断时换更精确的 selector 重取，"
+        "登录 / 提交表单等不可逆操作前先与用户确认。"
     )
     args_schema: Type[BaseModel] = BrowserInput
     max_tool_calls: int = Field(default=browser_count_limit)

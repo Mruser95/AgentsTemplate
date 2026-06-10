@@ -36,8 +36,8 @@ CREATE TABLE IF NOT EXISTS collation_cursor (
 DEFAULT_ROUTES: tuple[tuple[str, str], ...] = (
     ("short",      "Memory.mem_agent:route_short"),
     ("long",       "Memory.mem_agent:route_long"),
-    ("skills",     "SkillTree.skill_agent:route_skills"),
     ("project",    "Memory.proj_agent:route_project"),
+    ("skills",     "SkillTree.skill_agent:route_skills"),
     ("skill_tree", "SkillTree.skill_agent:route_skill_tree"),
 )
 

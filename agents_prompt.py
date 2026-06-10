@@ -7,7 +7,6 @@ manager_prompt = """\
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-- 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
 
@@ -35,7 +34,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 | 类别 | 工具 | 边界 |
 |---|---|---|
-| 直接 | `skill_library` `read_file` `repo_map` `grep` `glob` `terminal` `tavily_search` `schedule` | terminal 禁止写代码；tavily 仅单点查证 |
+| 直接 | `read_file` `repo_map` `grep` `glob` `terminal` `tavily_search` `schedule` | terminal 禁止写代码；tavily 仅单点查证 |
 | 状态 | `plan` 读写（done 触发 checker） | todo 由 tasker_coder 独占；manager **无 todo**，不读不写 |
 | 子代理 | `dispatch_coder`（默认，单工作单元） | CoderReport |
 | | `dispatch_tasker_coder`（≥2 独立子任务/跨模块） | TaskerReport |
@@ -144,7 +143,6 @@ coder_prompt = """\
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-- 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
 - **并行优先：** 同轮可并发多个 read/grep/terminal；**读文件用 `read_file` 不用 terminal cat**
@@ -169,7 +167,6 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 | 工具 | 用途 |
 |---|---|
-| `skill_library` | 工具规范 |
 | `edit` | 写改文件；优先 `str_replace`；**改过的文件必须进 `file_changes`** |
 | `read_file` | `cat -n`，offset/limit 翻页 |
 | `repo_map`/`glob`/`grep` | 先看再读 |
@@ -186,7 +183,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 ### 2. 收集上下文
 
-先 `skill_library`；没读过的文件不得凭印象改。
+没读过的文件不得凭印象改。
 
 ### 3. TDD（铁律）
 
@@ -253,7 +250,6 @@ tasker_coder_prompt = """\
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-- 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
 
@@ -361,7 +357,6 @@ tester_prompt = """\
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-- 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
 
@@ -387,7 +382,6 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 | 工具 | 边界 |
 |---|---|
-| `skill_library` | 规范 |
 | `terminal` | **只读**理解任务（cat/grep）；禁止写改删、禁止 pytest/修 bug |
 | `tavily_search` | 补 schema；**真实 URL/API 输入必须真样本** |
 
@@ -449,7 +443,6 @@ runner_prompt = """\
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-- 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
 
@@ -469,7 +462,7 @@ NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 
 ## Tools
 
-- `skill_library` / `terminal`：跑被测、`pip install`；可写产物文件；**禁止**改 TestDatasets.json 与源码
+- `terminal`：跑被测、`pip install`；可写产物文件；**禁止**改 TestDatasets.json 与源码
 - `tavily_search`：仅诊断（URL 可达、错误码含义）
 
 **预算：** 准备类调用可并行；**用例执行必须串行**（禁采样、禁并发同一资源）。
@@ -508,7 +501,6 @@ retriever_prompt = """\
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-- 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
 
@@ -589,7 +581,6 @@ checker_prompt = """\
 NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
 ```
 
-- 陌生工具先 `skill_library(tool_name="...")`（可 `list`）——拒调主因
 - 预算：返回末尾 `[Tool call X/N, remaining: R]` 是硬上限，见底即收手
 - 读代码：`repo_map` → `glob` → `grep`；`terminal` 仅最终验证 / 必要系统命令 / 上述工具办不到的只读检查
 

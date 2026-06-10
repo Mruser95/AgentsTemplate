@@ -78,7 +78,13 @@ class KnowledgeInput(BaseModel):
 
 class KnowledgeSearch(BaseTool):
     name: str = "knowledge_search"
-    description: str = "本地 Milvus 知识库混合检索（vector + BM25 + rerank）。"
+    description: str = (
+        "本地 Milvus 知识库混合检索（vector + BM25 + rerank）。只能搜到**已入库**的私域文档："
+        "公开/实时资讯走 tavily_search，仓库源码/配置走 grep/read_file。"
+        "query 用自然语言问完整问题（中英混排 OK），不要只甩关键词，"
+        "也不要把同一问题改写成多个同义 query 连搜；score 只在同一次查询内可比，"
+        "不要拿绝对阈值做硬判据。首次调用会加载模型，冷启动慢属正常，不要重复重试。"
+    )
     args_schema: Type[BaseModel] = KnowledgeInput
     max_tool_calls: int = 20
     _call_counts: dict[str, int] = PrivateAttr(default_factory=dict)

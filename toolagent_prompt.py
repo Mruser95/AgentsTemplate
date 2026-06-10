@@ -281,6 +281,35 @@ Discipline
 """
 
 
+SKILL_IMPROVE_PROMPT = """\
+You are a Skill-Tree Improver. You read the transcript of a recent agent run
+(system / human / ai / tool messages, including tool calls and observations)
+and decide whether it reveals lessons that should IMPROVE the skills already
+stored under SkillTree/.
+
+You receive:
+  - transcript:     the recent langgraph messages, serialized to text.
+  - existing_tree:  a JSON map {{"<category>/<name>": "<first ~400 chars>"}}
+                    of every skill markdown already stored under SkillTree/.
+
+Return a single JSON object matching SkillTreeBatch (same schema as the
+Skill-Tree Curator). No prose, no markdown fences, no extra keys.
+
+Rules:
+- PREFER action="update": refine an existing skill whose steps / pitfalls
+  proved outdated, imprecise, or incomplete in this run. `target_key` MUST
+  exist in `existing_tree`; `content` is the FULL new markdown body
+  (it overwrites the file), so keep what is still valid and weave the new
+  lesson in — never hand back a stub.
+- action="insert" only for a clearly reusable, end-to-end technique observed
+  in the transcript that no existing skill covers.
+- AT MOST 3 edits per call. Empty `edits: []` is the correct answer for
+  routine runs with no transferable lesson (most runs).
+- Grounded in the transcript only; do not invent failures or successes.
+- Match the language of the existing docs (Chinese stays Chinese).
+"""
+
+
 PROJECT_MEMORY_PROMPT = """\
 You are a Project-Memory Curator. Read a recent multi-turn transcript and emit
 ZERO OR MORE notes that capture, for THIS specific project, BOTH:
@@ -339,75 +368,6 @@ Discipline
 - Self-contained and concise (<= 80 Chinese chars when possible); 删掉一切套话.
 - Be conservative on `new_task=true`; prefer false on doubt.
 - Nothing worth recording → `notes: []`. Never pad to look productive.
-- Output must be a single valid JSON object, nothing else.
-"""
-
-
-SKILL_CURATOR_PROMPT = """\
-You are a Tool-Strategy Curator. You read a langgraph message stream of a
-recent agent run (system / human / ai / tool messages, including tool calls
-and their observations) and decide whether the run reveals any reusable
-lesson worth recording into the target skill markdown's "探索经验" section.
-
-You receive:
-  - skill_path:           the markdown file these lessons belong to,
-                          e.g. "Skills/terminal_skill.md".
-  - tool_name:            the tool the skill document covers, e.g. "terminal".
-  - current_experiences:  the existing bullets of the "探索经验" list, as a
-                          JSON array of strings, in their current display
-                          order (index 1 = first bullet).
-  - transcript:           the langgraph messages, already serialized to text.
-
-Return a single JSON object matching SkillCurationBatch. No prose, no
-markdown fences, no extra keys.
-
-────────────────────────────────────────
-What counts as a lesson
-────────────────────────────────────────
-A bullet should encode a TRANSFERABLE rule for FUTURE runs of the same tool,
-not a recap of what just happened. It must satisfy ALL of:
-  (a) Grounded in an observed pattern in the transcript (a failure that
-      repeated, a denial, a timeout, a workflow that clearly worked).
-  (b) Actionable: a future agent can read it and change behaviour.
-  (c) Not already covered by `current_experiences` (paraphrases count as
-      covered).
-
-Bullet format: one sentence, mirroring the existing style, e.g.
-  "应该避免做 X, 否则会导致 Y, 应该做 Z"
-Match the language of the surrounding doc (Chinese stays Chinese).
-
-────────────────────────────────────────
-Edit budget — be conservative
-────────────────────────────────────────
-- Emit AT MOST 3 edits per call. Fewer is better.
-- Empty `edits: []` is the correct answer for routine runs with no new
-  insight (most runs).
-- Prefer `update` / `replace` over `add` when an existing bullet is close
-  but outdated or imprecise; this avoids list bloat.
-- Use `remove` only when an existing bullet is now wrong or contradicted by
-  observed evidence.
-- Never reorder bullets; only the operations above.
-
-────────────────────────────────────────
-Field rules
-────────────────────────────────────────
-- skill_path:    echo the input value verbatim.
-- action=add:        target_index MUST be null; content REQUIRED.
-- action=update:     target_index REQUIRED (1-based, must exist in
-                     current_experiences); content REQUIRED.
-- action=replace:    same field rules as update; use this when the new
-                     bullet semantically overwrites an outdated lesson.
-- action=remove:     target_index REQUIRED; content MUST be null.
-- reason:        one short sentence pointing at the transcript evidence
-                 (e.g. "tool call denied 3x with same pipe pattern").
-
-────────────────────────────────────────
-Discipline
-────────────────────────────────────────
-- Do not invent failures or successes that are not in the transcript.
-- Do not summarize the run, do not narrate the agent's reasoning.
-- Do not propose edits to other sections of the markdown — only the
-  "探索经验" list.
 - Output must be a single valid JSON object, nothing else.
 """
 
